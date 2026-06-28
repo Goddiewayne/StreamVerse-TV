@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- Video surface — fills the entire screen edge-to-edge. No transport controls:
+         live TV has no seek bar, and we handle DPAD focus ourselves. -->
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/tv_player_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:focusable="false"
+        app:show_buffering="when_playing"
+        app:use_controller="false" />
+
+    <!-- NO-SIGNAL OVERLAY — authentic analogue TV static + an elegant OSD, shown instead of a
+         black screen whenever a stream can't start or drops. Also used (OSD hidden) as a brief
+         "tuning" snow under the spinner on a fresh load. Covers the whole video surface. -->
+    <FrameLayout
+        android:id="@+id/tv_no_signal"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <com.streamverse.core.ui.TvStaticView
+            android:id="@+id/tv_static"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Television OSD — fades in, then recedes, never an Android error dialog. -->
+        <LinearLayout
+            android:id="@+id/tv_signal_osd"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:padding="32dp">
+
+            <TextView
+                android:id="@+id/tv_signal_headline"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="NO SIGNAL"
+                android:textColor="@android:color/white"
+                android:textSize="40sp"
+                android:textStyle="normal"
+                android:letterSpacing="0.25"
+                android:shadowColor="#000000"
+                android:shadowDx="0"
+                android:shadowDy="0"
+                android:shadowRadius="12"
+                android:gravity="center" />
+
+            <TextView
+                android:id="@+id/tv_signal_detail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:textColor="#D8FFFFFF"
+                android:textSize="17sp"
+                android:letterSpacing="0.05"
+                android:shadowColor="#000000"
+                android:shadowDx="0"
+                android:shadowDy="0"
+                android:shadowRadius="10"
+                android:gravity="center" />
+
+            <TextView
+                android:id="@+id/tv_signal_hint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="26dp"
+                android:text="OK to retry   ·   ◄ change source   ·   ▲▼ change channel"
+                android:textColor="#80FFFFFF"
+                android:textSize="13sp"
+                android:gravity="center" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Buffering indicator — centred, visible while stream is resolving or rebuffering. -->
+    <ProgressBar
+        android:id="@+id/tv_player_progress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:indeterminate="true" />
+
+    <!-- NOW-PLAYING overlay — slides in at the top on launch and on any DPAD press.
+         Shows channel name, category, and a LIVE badge. Auto-hides after 4 s. -->
+    <LinearLayout
+        android:id="@+id/tv_now_playing"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="#CC000000"
+        android:orientation="horizontal"
+        android:padding="28dp"
+        android:gravity="center_vertical"
+        android:visibility="gone">
+
+        <!-- Red LIVE dot -->
+        <TextView
+            android:id="@+id/tv_live_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="● LIVE"
+            android:textColor="#FF3B30"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:paddingEnd="16dp" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tv_channel_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@android:color/white"
+                android:textSize="26sp"
+                android:textStyle="bold"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <TextView
+                android:id="@+id/tv_channel_meta"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#B0BEC5"
+                android:textSize="14sp"
+                android:paddingTop="2dp"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- SOURCE PICKER — DPAD-navigable bar at the bottom. Only shown for multi-source channels
+         and only on DPAD press; auto-hides after 5 s of inactivity. -->
+    <LinearLayout
+        android:id="@+id/tv_source_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#CC000000"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Watch from"
+            android:textColor="#90A4AE"
+            android:textSize="13sp"
+            android:paddingBottom="10dp" />
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none"
+            android:focusable="false"
+            android:descendantFocusability="afterDescendants">
+
+            <LinearLayout
+                android:id="@+id/tv_source_chips"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+    </LinearLayout>
+
+</FrameLayout>

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV leanback banner (320×180 dp) — shown on the Android TV / FireTV home launcher when the
+     mobile app is installed on a TV device. Mirrors the TV module's banner for a unified brand. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <path
+        android:fillColor="#080C14"
+        android:pathData="M0,0 L320,0 L320,180 L0,180 Z" />
+
+    <path android:strokeColor="#0822D3EE" android:strokeWidth="1"
+        android:pathData="M0,45 L320,45 M0,90 L320,90 M0,135 L320,135" />
+    <path android:strokeColor="#0822D3EE" android:strokeWidth="1"
+        android:pathData="M80,0 L80,180 M160,0 L160,180 M240,0 L240,180" />
+
+    <path
+        android:fillColor="#22D3EE"
+        android:pathData="M0,50 L4,50 L4,130 L0,130 Z" />
+    <path
+        android:fillColor="#818CF8"
+        android:pathData="M6,65 L8,65 L8,115 L6,115 Z" />
+
+    <path
+        android:fillColor="#1E293B"
+        android:pathData="M24,54 L160,54 Q166,54 166,60 L166,118 Q166,124 160,124 L112,124 L112,132 L122,132 L122,136 L62,136 L62,132 L72,132 L72,124 L24,124 Q18,124 18,118 L18,60 Q18,54 24,54 Z" />
+    <path
+        android:strokeColor="#22D3EE"
+        android:strokeWidth="2"
+        android:fillColor="#00000000"
+        android:pathData="M24,54 L160,54 Q166,54 166,60 L166,118 Q166,124 160,124 L112,124 L112,132 L122,132 L122,136 L62,136 L62,132 L72,132 L72,124 L24,124 Q18,124 18,118 L18,60 Q18,54 24,54 Z" />
+    <path
+        android:fillColor="#0D22D3EE"
+        android:pathData="M21,57 L163,57 L163,121 L21,121 Z" />
+    <path
+        android:fillColor="#22D3EE"
+        android:pathData="M72,74 L72,104 L104,89 Z" />
+    <path
+        android:fillColor="#818CF8"
+        android:pathData="M104,89m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+
+    <path
+        android:strokeColor="#F1F5F9" android:strokeWidth="3" android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M192,76 Q192,70 198,70 L216,70 Q222,70 222,76 Q222,82 216,82 L198,82 Q192,82 192,88 Q192,94 198,94 L216,94 Q222,94 222,100" />
+    <path
+        android:strokeColor="#F1F5F9" android:strokeWidth="3" android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M228,70 L248,70 M238,70 L238,100" />
+    <path
+        android:strokeColor="#22D3EE" android:strokeWidth="3" android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M254,70 L262,100 L270,70" />
+
+    <path
+        android:strokeColor="#22D3EE" android:strokeWidth="2.5" android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M282,36 Q300,22 318,36" />
+    <path
+        android:strokeColor="#22D3EE" android:strokeWidth="2" android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M287,46 Q300,35 313,46" />
+    <path
+        android:fillColor="#22D3EE"
+        android:pathData="M300,63m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+
+    <path
+        android:fillColor="#1E293B"
+        android:pathData="M277,14 L315,14 Q319,14 319,18 L319,30 Q319,34 315,34 L277,34 Q273,34 273,30 L273,18 Q273,14 277,14 Z" />
+    <path
+        android:fillColor="#4ADE80"
+        android:pathData="M281,22m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+</vector>

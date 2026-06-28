@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base app theme (no action bar) -->
+    <style name="Theme.StreamVerse" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/splash_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- Splash screen theme (shown before Compose loads) -->
+    <style name="Theme.StreamVerse.Splash" parent="Theme.StreamVerse">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+
+    <!-- Modern SplashScreen API theme: branded icon over the brand background, held until
+         Home Phase 1 is ready, then handing off to Theme.StreamVerse with no white/black flash. -->
+    <style name="Theme.StreamVerse.SplashApi" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_animated</item>
+        <item name="windowSplashScreenAnimationDuration">900</item>
+        <item name="postSplashScreenTheme">@style/Theme.StreamVerse</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

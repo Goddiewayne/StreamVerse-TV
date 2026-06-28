@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Touch is not available on TV/FireTV — mark as NOT required so the app
+         installs correctly and the Amazon Appstore does not block it. -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <!-- Leanback: required="false" so the APK installs on Amazon FireTV, which
+         runs Fire OS (AOSP-based) and does NOT declare android.software.leanback.
+         The app still runs the full Leanback UI on both platforms. -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <!-- Declared as optional so the Amazon Appstore can route the app to FireTV
+         devices. required="false" keeps it installable on non-FireTV Android TV too. -->
+    <uses-feature
+        android:name="amazon.hardware.fire_tv"
+        android:required="false" />
+
+    <application
+        android:name=".StreamVerseTVApp"
+        android:allowBackup="false"
+        android:banner="@drawable/tv_banner"
+        android:icon="@drawable/tv_icon"
+        android:label="StreamVerse"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.StreamVerseTV"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <!-- Splash activity is the entry point on both Android TV and FireTV.
+             It holds the branded screen while the channel catalogue loads, then
+             launches MainActivity. It is the only exported LAUNCHER activity. -->
+        <activity
+            android:name=".TVSplashActivity"
+            android:exported="true"
+            android:theme="@style/Theme.StreamVerseTV.Splash"
+            android:banner="@drawable/tv_banner">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Browse / home screen. Not exported — only reachable from TVSplashActivity. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:banner="@drawable/tv_banner" />
+
+        <activity
+            android:name=".ui.playback.TVPlaybackActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.StreamVerseTV.Playback" />
+
+        <activity
+            android:name=".ui.search.TVSearchActivity"
+            android:exported="false"
+            android:theme="@style/Theme.StreamVerseTV" />
+
+        <activity
+            android:name=".ui.settings.TVSettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.StreamVerseTV" />
+
+        <activity
+            android:name=".ui.search.TVRegionSearchActivity"
+            android:exported="false"
+            android:theme="@style/Theme.StreamVerseTV" />
+    </application>
+</manifest>

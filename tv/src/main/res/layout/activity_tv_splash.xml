@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#080C14">
+
+    <!-- Centered content column -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
+
+        <!-- Logo -->
+        <ImageView
+            android:id="@+id/splash_logo"
+            android:layout_width="200dp"
+            android:layout_height="200dp"
+            android:src="@drawable/tv_icon"
+            android:scaleType="fitCenter"
+            android:alpha="0" />
+
+        <!-- App name -->
+        <TextView
+            android:id="@+id/splash_name"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="StreamVerse"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:textColor="#F1F5F9"
+            android:letterSpacing="0.04"
+            android:alpha="0" />
+
+        <!-- "TV" tag in CyberCyan -->
+        <TextView
+            android:id="@+id/splash_tagline"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="TV"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="#22D3EE"
+            android:letterSpacing="0.3"
+            android:alpha="0" />
+
+    </LinearLayout>
+
+    <!-- Subtle CyberCyan loading strip at the very bottom -->
+    <View
+        android:id="@+id/splash_loading_bar"
+        android:layout_width="120dp"
+        android:layout_height="2dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="48dp"
+        android:background="#22D3EE"
+        android:alpha="0" />
+
+</FrameLayout>

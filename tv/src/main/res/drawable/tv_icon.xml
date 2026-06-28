@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Unified StreamVerse launcher icon — same design as ic_launcher_foreground in the
+     mobile app; just rendered at 48 dp for the Android TV home-screen tile. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Background circle with deep-space radial gradient -->
+    <path android:pathData="M54,0 A54,54 0 1,1 53.999,0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="54">
+                <item android:offset="0" android:color="#1E2A45"/>
+                <item android:offset="1" android:color="#080C14"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- TV frame (gradient border cyan → violet) -->
+    <path android:pathData="M22,18 H86 Q94,18 94,26 V70 Q94,78 86,78 H22 Q14,78 14,70 V26 Q14,18 22,18 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="14" android:startY="18"
+                android:endX="94" android:endY="78">
+                <item android:offset="0" android:color="#22D3EE"/>
+                <item android:offset="0.5" android:color="#6366F1"/>
+                <item android:offset="1" android:color="#818CF8"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- TV screen interior (dark) -->
+    <path android:pathData="M25,21 H83 Q90,21 90,27 V69 Q90,75 83,75 H25 Q18,75 18,69 V27 Q18,21 25,21 Z"
+        android:fillColor="#080C14"/>
+
+    <!-- Corner sparkles -->
+    <path android:pathData="M28,29 m-1.2,0 a1.2,1.2 0,1,0 2.4,0 a1.2,1.2 0,1,0 -2.4,0"
+        android:fillColor="#22D3EE" android:fillAlpha="0.7"/>
+    <path android:pathData="M83,27 m-1,0 a1,1 0,1,0 2,0 a1,1 0,1,0 -2,0"
+        android:fillColor="#818CF8" android:fillAlpha="0.6"/>
+    <path android:pathData="M80,68 m-0.8,0 a0.8,0.8 0,1,0 1.6,0 a0.8,0.8 0,1,0 -1.6,0"
+        android:fillColor="#22D3EE" android:fillAlpha="0.5"/>
+    <path android:pathData="M26,66 m-1,0 a1,1 0,1,0 2,0 a1,1 0,1,0 -2,0"
+        android:fillColor="#818CF8" android:fillAlpha="0.5"/>
+
+    <!-- Signal arc outer -->
+    <path
+        android:pathData="M36,38 A13,13 0 0,0 36,58"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.5">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear"
+                android:startX="36" android:startY="38"
+                android:endX="36" android:endY="58">
+                <item android:offset="0" android:color="#22D3EE"/>
+                <item android:offset="1" android:color="#818CF8"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Signal arc inner -->
+    <path
+        android:pathData="M40,42 A8,8 0 0,0 40,54"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear"
+                android:startX="40" android:startY="42"
+                android:endX="40" android:endY="54">
+                <item android:offset="0" android:color="#22D3EE"/>
+                <item android:offset="1" android:color="#818CF8"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Play triangle (cyan → violet gradient) -->
+    <path android:pathData="M46,37 L46,59 L70,48 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="46" android:startY="37"
+                android:endX="70" android:endY="59">
+                <item android:offset="0" android:color="#22D3EE"/>
+                <item android:offset="1" android:color="#818CF8"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glow dot at play tip -->
+    <path android:pathData="M70,48 m-3,0 a3,3 0,1,0 6,0 a3,3 0,1,0 -6,0">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="radial"
+                android:centerX="70" android:centerY="48"
+                android:gradientRadius="4">
+                <item android:offset="0" android:color="#FFFFFF"/>
+                <item android:offset="0.4" android:color="#818CF8"/>
+                <item android:offset="1" android:color="#818CF800"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- TV stand -->
+    <path android:pathData="M42,78 L38,90 L70,90 L66,78 Z"
+        android:fillColor="#1E293B"/>
+
+    <!-- TV base -->
+    <path android:pathData="M32,90 H76 Q78,90 78,92 V94 Q78,96 76,96 H32 Q30,96 30,94 V92 Q30,90 32,90 Z"
+        android:fillColor="#1E293B"/>
+
+    <!-- Base highlight -->
+    <path android:pathData="M35,90 H73"
+        android:strokeWidth="1"
+        android:strokeColor="#22D3EE"
+        android:strokeAlpha="0.4"
+        android:fillColor="#00000000"/>
+
+</vector>

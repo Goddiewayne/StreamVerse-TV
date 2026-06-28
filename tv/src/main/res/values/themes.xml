@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App theme for the leanback UI. Extends the library's full Theme.Leanback (do NOT shadow
+         that name, and do NOT inherit from Theme.Leanback.Browse — that is an overlay applied by
+         BrowseSupportFragment, not a base theme, and using it as the base drops required
+         attributes and crashes layout inflation). -->
+    <!-- Splash theme: full-screen, no title bar, deep-space window background. -->
+    <style name="Theme.StreamVerseTV.Splash" parent="Theme.Leanback">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowBackground">@color/deep_space</item>
+        <item name="android:colorBackground">@color/deep_space</item>
+    </style>
+
+    <style name="Theme.StreamVerseTV" parent="Theme.Leanback">
+        <!-- DeepSpace background unifies TV with mobile dark-mode feel -->
+        <item name="android:colorBackground">@color/deep_space</item>
+        <item name="android:windowBackground">@color/deep_space</item>
+    </style>
+
+    <!-- Playback-only theme: no title bar, no status bar chrome — window flags + WindowInsetsController
+         handle true immersive mode at runtime so we stay compatible with API 28–34. -->
+    <style name="Theme.StreamVerseTV.Playback" parent="Theme.Leanback">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome layer for Android 13+ themed icons: a flat single-colour TV + play silhouette
+     (the system applies the user's theme tint). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108"
+    android:tint="#FFFFFF">
+    <group android:scaleX="0.82" android:scaleY="0.82" android:pivotX="54" android:pivotY="54">
+        <!-- TV frame as an outline -->
+        <path android:pathData="M22,18 H86 Q94,18 94,26 V70 Q94,78 86,78 H22 Q14,78 14,70 V26 Q14,18 22,18 Z"
+            android:strokeColor="#FFFFFF" android:strokeWidth="4" android:fillColor="#00000000"/>
+        <!-- Play triangle -->
+        <path android:pathData="M46,37 L46,59 L70,48 Z" android:fillColor="#FFFFFF"/>
+        <!-- TV stand -->
+        <path android:pathData="M44,78 L40,90 L68,90 L64,78 Z" android:fillColor="#FFFFFF"/>
+        <path android:pathData="M34,90 H74 V96 H34 Z" android:fillColor="#FFFFFF"/>
+    </group>
+</vector>

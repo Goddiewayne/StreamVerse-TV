@@ -1,0 +1,22 @@
+{
+  "name": "dstv-archiver",
+  "version": "1.0.0",
+  "description": "DSTV Stream channel archiver — captures live streams with Widevine decryption",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "dstv-archiver": "./index.js"
+  },
+  "scripts": {
+    "list": "node index.js list",
+    "capture": "node index.js capture",
+    "license": "node index.js license",
+    "download": "node index.js download"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "commander": "^12.0.0",
+    "puppeteer": "^24.0.0",
+    "uuid": "^10.0.0"
+  }
+}

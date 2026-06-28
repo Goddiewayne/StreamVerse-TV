@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Animated splash icon: the play triangle scales in with an overshoot bounce
+     while the rest of the logo (TV frame, signal arcs, stand) is already visible.
+     Used as windowSplashScreenAnimatedIcon on API 31+; falls back to the static
+     ic_launcher_foreground on older devices. -->
+<animated-vector
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_splash_logo_grouped">
+
+    <target
+        android:name="play_group"
+        android:animation="@animator/splash_play_scale"/>
+
+</animated-vector>

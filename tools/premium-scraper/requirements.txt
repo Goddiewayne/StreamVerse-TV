@@ -1,0 +1,3 @@
+requests>=2.31.0
+# Optional: Full Telegram message history (public preview works without)
+telethon>=1.34.0

@@ -10,6 +10,11 @@
 -keep class org.mozilla.javascript.** { *; }
 -keep class org.mozilla.classfile.ClassFileWriter
 
+# Rhino references desktop-only JRE classes unavailable on Android
+-dontwarn java.beans.**
+-dontwarn javax.script.**
+-dontwarn jdk.dynalink.**
+
 # Strip verbose debug logging from release builds (avoids leaking URLs/state and the call cost).
 # Warnings and errors are kept for production crash diagnosis.
 -assumenosideeffects class android.util.Log {

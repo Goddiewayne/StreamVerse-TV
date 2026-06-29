@@ -14,11 +14,15 @@ import androidx.lifecycle.lifecycleScope
 import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.FavoritesRepository
+import com.streamverse.core.data.repository.HomeRankingEngine
+import com.streamverse.core.data.repository.LoadingPhase
 import com.streamverse.core.data.repository.ProgrammeRepository
 import com.streamverse.core.data.repository.RankingContext
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.DayPeriod
+import com.streamverse.core.domain.model.HomeSection
 import com.streamverse.core.domain.model.numberedDisplayName
+import com.streamverse.core.domain.model.SectionType
 import com.streamverse.core.domain.model.SortMode
 import com.streamverse.core.domain.model.TimeOfDay
 import com.streamverse.core.util.CategoryNormalizer
@@ -33,11 +37,17 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.FlowPreview
 import javax.inject.Inject
 
 @AndroidEntryPoint
+@OptIn(FlowPreview::class)
 class TVBrowseFragment : BrowseSupportFragment() {
 
     @Inject lateinit var channelRepository: ChannelRepository
@@ -45,6 +55,7 @@ class TVBrowseFragment : BrowseSupportFragment() {
     @Inject lateinit var streamPreResolver: StreamPreResolver
     @Inject lateinit var channelHealthEngine: ChannelHealthEngine
     @Inject lateinit var programmeRepo: ProgrammeRepository
+    @Inject lateinit var homeRanking: HomeRankingEngine
 
     private var liveIds: Set<String> = emptySet()
 
@@ -117,17 +128,44 @@ class TVBrowseFragment : BrowseSupportFragment() {
 
         showLoadingPlaceholders()
 
+        // ── Structural updates: channels/radio/sort mode change → rebuild rows ──
         loadingJob?.cancel()
-        loadingJob = lifecycleScope.launch {
+        loadingJob = lifecycleScope.launch(Dispatchers.Default) {
+            // Wait for initial health data so the first render has correct live filtering.
+            // If health data doesn't arrive within 3s, proceed with all channels.
+            val initialLive = channelHealthEngine.liveChannelIds.value.let { current ->
+                if (current.isNotEmpty()) current
+                else withTimeoutOrNull(3_000L) {
+                    channelHealthEngine.liveChannelIds.first { it.isNotEmpty() }
+                } ?: emptySet()
+            }
+            liveIds = initialLive
+
             combine(
                 channelRepository.channels,
                 channelRepository.radioChannels,
                 _sortMode,
             ) { chs, radios, sortMode ->
                 Triple(chs, radios, sortMode)
-            }.collect { (chs, radios, sortMode) ->
-                if (chs.isNotEmpty() || radios.isNotEmpty()) populateRows(chs, radios, sortMode)
             }
+                .debounce(1000)
+                .collect { (chs, radios, sortMode) ->
+                    if (chs.isNotEmpty() || radios.isNotEmpty()) {
+                        computeAndApplyRows(chs, radios, sortMode)
+                    }
+                }
+        }
+
+        // ── Live badge updates: only refresh card states, never rebuild rows ──
+        lifecycleScope.launch {
+            channelHealthEngine.liveChannelIds
+                .debounce(300)
+                .collect { live ->
+                    if (live != liveIds) {
+                        liveIds = live
+                        if (rowsBuilt) refreshLiveBadges()
+                    }
+                }
         }
 
         lifecycleScope.launch {
@@ -138,16 +176,17 @@ class TVBrowseFragment : BrowseSupportFragment() {
         }
 
         lifecycleScope.launch {
-            channelHealthEngine.liveChannelIds.collect { ids ->
-                liveIds = ids
-                refreshFavoriteHearts()
-            }
-        }
-
-        lifecycleScope.launch {
             withContext(NonCancellable) {
                 channelRepository.load()
             }
+        }
+
+        // Progressive verification: once loading finishes, kick off health checks on
+        // the full unfiltered catalogue so live badges populate progressively.
+        lifecycleScope.launch {
+            channelRepository.loadingPhase.first { it == LoadingPhase.DONE }
+            val allChs = channelRepository.getCachedChannels()
+            if (allChs.isNotEmpty()) channelHealthEngine.verify(allChs.take(2000), deep = false)
         }
     }
 
@@ -159,6 +198,271 @@ class TVBrowseFragment : BrowseSupportFragment() {
     }
 
     private var showingPlaceholders = false
+    /** True once the initial row structure has been built. Subsequent emissions should
+     *  update cards incrementally rather than rebuilding everything. */
+    private var rowsBuilt = false
+
+    /**
+     * Computes all row data on [Dispatchers.Default], then applies adapter updates on Main.
+     * This keeps heavy sorting/ranking off the UI thread and prevents ANRs during
+     * progressive channel loading.
+     */
+    private suspend fun computeAndApplyRows(all: List<Channel>, radioChannels: List<Channel>, sortMode: SortMode) {
+        // Phase 1: compute all channel lists off Main thread
+        // Schedule health verification
+        val recentChs = loadHistory(all)
+        val recentIds = recentChs.map { it.id }.toSet()
+        channelHealthEngine.verify(recentChs, deep = true)
+        channelHealthEngine.verify(all.filter { it.id in favoriteIds }, deep = true)
+        channelHealthEngine.verify(all.take(500), deep = false)
+
+        val ctx = RankingContext(
+            userRegion = RegionProvider.getRegionCode(),
+            recentlyWatchedIds = recentIds,
+            favoriteIds = favoriteIds,
+        )
+        programmeRepo.refreshTimeOfDay()
+        currentTimeOfDay = programmeRepo.timeOfDay.value
+        val timeOfDay = currentTimeOfDay
+        val localLiveIds = liveIds
+
+        val liveFirst: (List<Channel>) -> List<Channel> = { list ->
+            val live = list.filter { it.id in localLiveIds }
+            val rest = list.filter { it.id !in localLiveIds }
+            (live + rest).distinctBy { it.id }
+        }
+
+        val liveChs = if (localLiveIds.isNotEmpty()) all.filter { it.id in localLiveIds } else all
+
+        data class SectionData(
+            val sectionType: SectionType,
+            val title: String,
+            val channels: List<Channel>,
+        )
+
+        val sections = mutableListOf<SectionData>()
+
+        // Compute each section's channel list
+        val featuredChs = programmeRepo.getGloballyPopular(liveFirst(liveChs), limit = 10, ctx)
+            .filter { !it.logoUrl.isNullOrBlank() }
+
+        sections += SectionData(SectionType.EDITOR_PICKS, "Editor's Picks",
+            programmeRepo.editorialPicks(liveFirst(liveChs), limit = 8, ctx))
+
+        val onNow = liveFirst(liveChs).sortedByDescending { programmeRepo.rankChannel(it, ctx) }.take(12)
+        sections += SectionData(SectionType.HERO_BANNER, "On Now", onNow)
+        channelHealthEngine.verify(featuredChs + onNow, deep = true)
+
+        programmeRepo.updateLiveEvents(liveChs)
+        val liveEvents = programmeRepo.liveEvents.value
+        if (liveEvents.isNotEmpty()) {
+            val eventChs = liveEvents.flatMap { it.channelIds }
+                .mapNotNull { id -> liveChs.find { it.id == id } }
+                .filter { !it.logoUrl.isNullOrBlank() }
+            sections += SectionData(SectionType.LIVE_EVENTS, "Live Events", eventChs.take(8))
+        }
+
+        sections += SectionData(SectionType.CONTINUE_WATCHING, "Continue Watching",
+            liveFirst(recentChs))
+
+        sections += SectionData(SectionType.TOP_NEWS, "Top News",
+            programmeRepo.topByCategory(liveChs, CategoryNormalizer.C.NEWS, limit = 8, ctx).let { liveFirst(it) })
+
+        programmeRepo.updateLiveScores(liveChs)
+        sections += SectionData(SectionType.TOP_SPORTS, "Top Sports",
+            programmeRepo.topByCategory(liveChs, CategoryNormalizer.C.SPORTS, limit = 8, ctx).let { liveFirst(it) })
+
+        sections += SectionData(SectionType.TOP_ENTERTAINMENT, "Top Entertainment",
+            programmeRepo.topByCategory(liveChs, CategoryNormalizer.C.ENTERTAINMENT, limit = 8, ctx).let { liveFirst(it) })
+
+        sections += SectionData(SectionType.TOP_MOVIES, "Top Movies",
+            programmeRepo.topByCategory(liveChs, CategoryNormalizer.C.MOVIES, limit = 8, ctx).let { liveFirst(it) })
+
+        sections += SectionData(SectionType.TOP_DOCUMENTARIES, "Top Documentaries",
+            programmeRepo.topByCategory(liveChs, CategoryNormalizer.C.DOCUMENTARY, limit = 8, ctx).let { liveFirst(it) })
+
+        programmeRepo.updateTrending(liveChs)
+        val trending = programmeRepo.trending.value.map { it.channel }.filter { !it.logoUrl.isNullOrBlank() }
+        sections += SectionData(SectionType.TRENDING, "Trending Live", trending.take(8))
+
+        sections += SectionData(SectionType.POPULAR_WORLDWIDE, "Popular Worldwide",
+            programmeRepo.getGloballyPopular(liveFirst(liveChs), limit = 12, ctx))
+
+        sections += SectionData(SectionType.POPULAR_IN_REGION, "Popular in Your Region",
+            programmeRepo.popularInRegion(liveFirst(liveChs), limit = 8, ctx))
+
+        sections += SectionData(SectionType.KIDS, "Kids",
+            programmeRepo.topByCategory(liveChs, CategoryNormalizer.C.KIDS, limit = 20, ctx).let { liveFirst(it) })
+
+        sections += SectionData(SectionType.MUSIC, "Music",
+            programmeRepo.topByCategory(liveChs, CategoryNormalizer.C.MUSIC, limit = 20, ctx).let { liveFirst(it) })
+
+        sections += SectionData(SectionType.RECOMMENDATIONS, "Recommended For You",
+            programmeRepo.getRecommendedChannels(liveChs, recentChs,
+                liveChs.mapNotNull { it.category }.toSet(), timeOfDay.period).let { liveFirst(it).take(8) })
+
+        sections += SectionData(SectionType.FAVOURITES, "My Favourites",
+            liveFirst(liveChs.filter { it.id in favoriteIds }))
+
+        // SortMode-specific channel groupings
+        val categories: List<Pair<String, List<Channel>>> = when (sortMode) {
+            SortMode.CATEGORY -> {
+                val cats = liveChs.mapNotNull { it.category }.distinct()
+                    .filter { it != CategoryNormalizer.C.RADIO }.sorted()
+                cats.mapNotNull { cat ->
+                    val chs = programmeRepo.topByCategory(liveChs, cat, limit = 40, ctx).let { liveFirst(it) }
+                    if (chs.isNotEmpty()) cat to chs else null
+                }
+            }
+            else -> emptyList()
+        }
+        val alphabeticalDigits: List<Channel> = when (sortMode) {
+            SortMode.ALPHABETICAL -> {
+                val sorted = liveFirst(liveChs).sortedBy { it.displayName.lowercase() }
+                sorted.filter { ch ->
+                    val first = ch.displayName.lowercase().firstOrNull()
+                    first != null && first in '0'..'9'
+                }.take(40)
+            }
+            else -> emptyList()
+        }
+        val alphabeticalLetters: List<Pair<Char, List<Channel>>> = when (sortMode) {
+            SortMode.ALPHABETICAL -> {
+                val sorted = liveFirst(liveChs).sortedBy { it.displayName.lowercase() }
+                ('A'..'Z').mapNotNull { letter ->
+                    val lc = letter.lowercase()[0]
+                    val chs = sorted.filter { ch ->
+                        val first = ch.displayName.lowercase().firstOrNull()
+                        first != null && first == lc
+                    }.take(40)
+                    if (chs.isNotEmpty()) letter to chs else null
+                }
+            }
+            else -> emptyList()
+        }
+        val regionGroups: List<Pair<String, List<Channel>>> = when (sortMode) {
+            SortMode.REGION -> {
+                val byRegion = liveChs.filterNot { it.country.isNullOrBlank() }
+                    .groupBy { it.country!! }.entries.sortedBy { it.key }
+                byRegion.map { (region, chs) -> region to liveFirst(chs).take(40) }
+            }
+            else -> emptyList()
+        }
+        val noRegionChs: List<Channel> = when (sortMode) {
+            SortMode.REGION -> liveChs.filter { it.country.isNullOrBlank() }.let { liveFirst(it).take(20) }
+            else -> emptyList()
+        }
+
+        val radioChs = radioChannels.take(40)
+
+        // Compute section ordering
+        val sectionOrder = homeRanking.rankSections(
+            sections.map { HomeSection(id = it.title, title = it.title, type = it.sectionType) },
+            timeOfDay.period,
+        ).map { it.type }
+
+        // Now apply to the adapter on the Main thread
+        withContext(Dispatchers.Main) {
+            rowsAdapter.clear()
+            showingPlaceholders = false
+
+            val presenter = TVChannelPresenter(
+                recentIds = recentIds,
+                isFavorite = { ch -> ch.id in favoriteIds },
+                onToggleFavorite = { ch -> toggleFavorite(ch) },
+                isLive = { ch -> ch.id in liveIds },
+            )
+            val onNowPresenter = TVOnNowPresenter(isLive = { ch -> ch.id in liveIds })
+
+            var rowIndex = 0L
+
+            // 1. Sort Mode
+            val sortAdapter = ArrayObjectAdapter(TVSettingsCardPresenter(
+                mainText = "Sort: ${sortMode.displayName}",
+                subText = "Tap to cycle",
+            ))
+            sortAdapter.add(sortMode)
+            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Sort"), sortAdapter))
+
+            // 2. Billboard (Featured)
+            if (featuredChs.isNotEmpty()) {
+                val billboardAdapter = ArrayObjectAdapter(TVBillboardPresenter { launchChannel(it) })
+                billboardAdapter.add(featuredChs)
+                rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Featured"), billboardAdapter))
+            }
+
+            // 3. Ordered sections
+            for (sectionType in sectionOrder) {
+                val sec = sections.find { it.sectionType == sectionType && it.channels.isNotEmpty() } ?: continue
+                val adapter = when (sectionType) {
+                    SectionType.KIDS, SectionType.MUSIC, SectionType.CONTINUE_WATCHING, SectionType.FAVOURITES -> {
+                        ArrayObjectAdapter(presenter)
+                    }
+                    else -> ArrayObjectAdapter(onNowPresenter)
+                }
+                sec.channels.forEach { adapter.add(it) }
+                rowsAdapter.add(ListRow(HeaderItem(rowIndex++, sec.title), adapter))
+            }
+
+            // 4. Sort-mode rows
+            when (sortMode) {
+                SortMode.CATEGORY -> {
+                    for ((cat, chs) in categories) {
+                        val adapter = ArrayObjectAdapter(presenter)
+                        chs.forEach { adapter.add(it) }
+                        rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "${categoryEmoji(cat)}  $cat"), adapter))
+                    }
+                }
+                SortMode.ALPHABETICAL -> {
+                    if (alphabeticalDigits.isNotEmpty()) {
+                        val adapter = ArrayObjectAdapter(presenter)
+                        alphabeticalDigits.forEach { adapter.add(it) }
+                        rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "0-9"), adapter))
+                    }
+                    for ((letter, chs) in alphabeticalLetters) {
+                        val adapter = ArrayObjectAdapter(presenter)
+                        chs.forEach { adapter.add(it) }
+                        rowsAdapter.add(ListRow(HeaderItem(rowIndex++, letter.toString()), adapter))
+                    }
+                }
+                SortMode.REGION -> {
+                    for ((region, chs) in regionGroups) {
+                        val adapter = ArrayObjectAdapter(presenter)
+                        chs.forEach { adapter.add(it) }
+                        rowsAdapter.add(ListRow(HeaderItem(rowIndex++, region), adapter))
+                    }
+                    if (noRegionChs.isNotEmpty()) {
+                        val adapter = ArrayObjectAdapter(presenter)
+                        noRegionChs.forEach { adapter.add(it) }
+                        rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Other"), adapter))
+                    }
+                }
+            }
+
+            // 5. Radio
+            if (radioChs.isNotEmpty()) {
+                val radioAdapter = ArrayObjectAdapter(TVChannelPresenter(
+                    isFavorite = { ch -> ch.id in favoriteIds },
+                    onToggleFavorite = { ch -> toggleFavorite(ch) },
+                    isLive = { ch -> ch.id in liveIds },
+                ))
+                radioChs.forEach { radioAdapter.add(it) }
+                rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Radio"), radioAdapter))
+            }
+
+            // 6. Settings
+            val settingsAdapter = ArrayObjectAdapter(TVSettingsCardPresenter())
+            settingsAdapter.add(SETTINGS_SENTINEL)
+            rowsAdapter.add(ListRow(HeaderItem(rowIndex, "Settings"), settingsAdapter))
+
+            rowsBuilt = true
+        }
+    }
+
+    /** Schedule health verification for these channels (safe to call from any thread). */
+    private fun scheduleVerify(channels: List<Channel>, deep: Boolean) {
+        channelHealthEngine.verify(channels, deep)
+    }
 
     private fun showLoadingPlaceholders() {
         rowsAdapter.clear()
@@ -171,291 +475,21 @@ class TVBrowseFragment : BrowseSupportFragment() {
         showingPlaceholders = true
     }
 
-    private fun populateRows(all: List<Channel>, radioChannels: List<Channel>, sortMode: SortMode = SortMode.CATEGORY) {
-        rowsAdapter.clear()
-        showingPlaceholders = false
-        var rowIndex = 0L
-
-        val recentChannels = loadHistory(all)
-        val recentIds = recentChannels.map { it.id }.toSet()
-
-        programmeRepo.refreshTimeOfDay()
-        currentTimeOfDay = programmeRepo.timeOfDay.value
-
-        channelHealthEngine.verify(recentChannels, deep = true)
-        channelHealthEngine.verify(all.filter { it.id in favoriteIds }, deep = true)
-        channelHealthEngine.verify(all.take(120), deep = false)
-
-        val ctx = RankingContext(
-            userRegion = RegionProvider.getRegionCode(),
-            recentlyWatchedIds = recentIds,
-            favoriteIds = favoriteIds,
-        )
-
-        val presenter = TVChannelPresenter(
-            recentIds = recentIds,
-            isFavorite = { ch -> ch.id in favoriteIds },
-            onToggleFavorite = { ch -> toggleFavorite(ch) },
-            isLive = { ch -> ch.id in liveIds },
-        )
-        val onNowPresenter = TVOnNowPresenter(isLive = { ch -> ch.id in liveIds })
-
-        val liveFirst: (List<Channel>) -> List<Channel> = { list ->
-            val live = list.filter { it.id in liveIds }
-            val rest = list.filter { it.id !in liveIds }
-            (live + rest).distinctBy { it.id }
-        }
-
-        // 1. Sort Mode
-        val sortAdapter = ArrayObjectAdapter(TVSettingsCardPresenter(
-            mainText = "Sort: ${sortMode.displayName}",
-            subText = "Tap to cycle",
-        ))
-        sortAdapter.add(sortMode)
-        rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Sort"), sortAdapter))
-
-        // 2. Billboard (Featured — editorially ranked)
-        val featuredChannels = programmeRepo.getGloballyPopular(liveFirst(all), limit = 10, ctx = ctx)
-            .filter { !it.logoUrl.isNullOrBlank() }
-        if (featuredChannels.isNotEmpty()) {
-            val billboardAdapter = ArrayObjectAdapter(TVBillboardPresenter { launchChannel(it) })
-            billboardAdapter.add(featuredChannels)
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Featured"), billboardAdapter))
-        }
-
-        // 3. Editor's Picks
-        val editorsPicks = programmeRepo.editorialPicks(liveFirst(all), limit = 8, ctx = ctx)
-        if (editorsPicks.isNotEmpty()) {
-            val epAdapter = ArrayObjectAdapter(onNowPresenter)
-            editorsPicks.forEach { epAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Editor's Picks"), epAdapter))
-        }
-
-        // 4. What's On Now
-        val onNow = liveFirst(all).sortedByDescending { programmeRepo.rankChannel(it, ctx) }
-            .take(12)
-        channelHealthEngine.verify(featuredChannels + onNow, deep = true)
-        if (onNow.isNotEmpty()) {
-            val onNowAdapter = ArrayObjectAdapter(onNowPresenter)
-            onNow.forEach { onNowAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "On Now"), onNowAdapter))
-        }
-
-        // 5. Live Events
-        programmeRepo.updateLiveEvents(all)
-        val liveEvents = programmeRepo.liveEvents.value
-        if (liveEvents.isNotEmpty()) {
-            val eventChs = liveEvents.flatMap { it.channelIds }
-                .mapNotNull { id -> all.find { it.id == id } }
-                .filter { !it.logoUrl.isNullOrBlank() }
-            if (eventChs.isNotEmpty()) {
-                val eventAdapter = ArrayObjectAdapter(onNowPresenter)
-                eventChs.take(8).forEach { eventAdapter.add(it) }
-                rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Live Events"), eventAdapter))
-            }
-        }
-
-        // 6. Continue Watching
-        if (recentChannels.isNotEmpty()) {
-            val continuePresenter = TVChannelPresenter(
-                recentIds = recentIds,
-                isFavorite = { ch -> ch.id in favoriteIds },
-                onToggleFavorite = { ch -> toggleFavorite(ch) },
-                isLive = { ch -> ch.id in liveIds },
-            )
-            val adapter = ArrayObjectAdapter(continuePresenter)
-            liveFirst(recentChannels).forEach { adapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Continue Watching"), adapter))
-        }
-
-        // 7. Top News
-        val topNews = programmeRepo.topByCategory(all, CategoryNormalizer.C.NEWS, limit = 8, ctx = ctx)
-            .let { liveFirst(it) }
-        if (topNews.isNotEmpty()) {
-            val newsAdapter = ArrayObjectAdapter(onNowPresenter)
-            topNews.forEach { newsAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Top News"), newsAdapter))
-        }
-
-        // 8. Top Sports
-        programmeRepo.updateLiveScores(all)
-        val topSports = programmeRepo.topByCategory(all, CategoryNormalizer.C.SPORTS, limit = 8, ctx = ctx)
-            .let { liveFirst(it) }
-        if (topSports.isNotEmpty()) {
-            val sportsAdapter = ArrayObjectAdapter(onNowPresenter)
-            topSports.forEach { sportsAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Top Sports"), sportsAdapter))
-        }
-
-        // 9. Top Entertainment
-        val topEntertainment = programmeRepo.topByCategory(all, CategoryNormalizer.C.ENTERTAINMENT, limit = 8, ctx = ctx)
-            .let { liveFirst(it) }
-        if (topEntertainment.isNotEmpty()) {
-            val entAdapter = ArrayObjectAdapter(onNowPresenter)
-            topEntertainment.forEach { entAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Top Entertainment"), entAdapter))
-        }
-
-        // 10. Top Movies
-        val topMovies = programmeRepo.topByCategory(all, CategoryNormalizer.C.MOVIES, limit = 8, ctx = ctx)
-            .let { liveFirst(it) }
-        if (topMovies.isNotEmpty()) {
-            val movieAdapter = ArrayObjectAdapter(onNowPresenter)
-            topMovies.forEach { movieAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Top Movies"), movieAdapter))
-        }
-
-        // 11. Top Documentaries
-        val topDocs = programmeRepo.topByCategory(all, CategoryNormalizer.C.DOCUMENTARY, limit = 8, ctx = ctx)
-            .let { liveFirst(it) }
-        if (topDocs.isNotEmpty()) {
-            val docsAdapter = ArrayObjectAdapter(onNowPresenter)
-            topDocs.forEach { docsAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Top Documentaries"), docsAdapter))
-        }
-
-        // 12. Trending
-        programmeRepo.updateTrending(all)
-        val trending = programmeRepo.trending.value.map { it.channel }.filter { !it.logoUrl.isNullOrBlank() }
-        if (trending.isNotEmpty()) {
-            val trendingAdapter = ArrayObjectAdapter(onNowPresenter)
-            trending.take(8).forEach { trendingAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Trending Live"), trendingAdapter))
-        }
-
-        // 13. Popular Worldwide
-        val popularWorldwide = programmeRepo.getGloballyPopular(liveFirst(all), limit = 12, ctx = ctx)
-        if (popularWorldwide.isNotEmpty()) {
-            val globalAdapter = ArrayObjectAdapter(onNowPresenter)
-            popularWorldwide.forEach { globalAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Popular Worldwide"), globalAdapter))
-        }
-
-        // 14. Popular in Your Region
-        val popularInRegion = programmeRepo.popularInRegion(liveFirst(all), limit = 8, ctx = ctx)
-        if (popularInRegion.isNotEmpty()) {
-            val regionAdapter = ArrayObjectAdapter(onNowPresenter)
-            popularInRegion.forEach { regionAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Popular in Your Region"), regionAdapter))
-        }
-
-        // 15. Kids
-        val kidsChs = programmeRepo.topByCategory(all, CategoryNormalizer.C.KIDS, limit = 20, ctx = ctx)
-            .let { liveFirst(it) }
-        if (kidsChs.isNotEmpty()) {
-            val kidsAdapter = ArrayObjectAdapter(presenter)
-            kidsChs.forEach { kidsAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Kids"), kidsAdapter))
-        }
-
-        // 16. Music
-        val musicChs = programmeRepo.topByCategory(all, CategoryNormalizer.C.MUSIC, limit = 20, ctx = ctx)
-            .let { liveFirst(it) }
-        if (musicChs.isNotEmpty()) {
-            val musicAdapter = ArrayObjectAdapter(presenter)
-            musicChs.forEach { musicAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Music"), musicAdapter))
-        }
-
-        // 17. Recommendations
-        val recs = programmeRepo.getRecommendedChannels(
-            all, recentChannels,
-            all.mapNotNull { it.category }.toSet(),
-            currentTimeOfDay.period,
-        )
-        if (recs.isNotEmpty()) {
-            val recsAdapter = ArrayObjectAdapter(onNowPresenter)
-            liveFirst(recs).take(8).forEach { recsAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Recommended For You"), recsAdapter))
-        }
-
-        // 18. My Favourites
-        val favorites = liveFirst(all.filter { it.id in favoriteIds })
-        if (favorites.isNotEmpty()) {
-            val favPresenter = TVChannelPresenter(
-                isFavorite = { ch -> ch.id in favoriteIds },
-                onToggleFavorite = { ch -> toggleFavorite(ch) },
-                isLive = { ch -> ch.id in liveIds },
-            )
-            val adapter = ArrayObjectAdapter(favPresenter)
-            favorites.forEach { adapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "My Favourites"), adapter))
-        }
-
-        when (sortMode) {
-            SortMode.CATEGORY -> {
-                val categories = all.mapNotNull { it.category }.distinct()
-                    .filter { it != CategoryNormalizer.C.RADIO }.sorted()
-                categories.forEach { category ->
-                    val catChannels = programmeRepo.topByCategory(all, category, limit = 40, ctx = ctx)
-                        .let { liveFirst(it) }
-                    if (catChannels.isNotEmpty()) {
-                        val adapter = ArrayObjectAdapter(presenter)
-                        catChannels.forEach { adapter.add(it) }
-                        rowsAdapter.add(
-                            ListRow(HeaderItem(rowIndex++, "${categoryEmoji(category)}  $category"), adapter)
-                        )
-                    }
-                }
-            }
-            SortMode.ALPHABETICAL -> {
-                val sorted = liveFirst(all).sortedBy { it.displayName.lowercase() }
-                val digitCh = sorted.filter { ch ->
-                    val first = ch.displayName.lowercase().firstOrNull()
-                    first != null && first in '0'..'9'
-                }
-                if (digitCh.isNotEmpty()) {
-                    val adapter = ArrayObjectAdapter(presenter)
-                    digitCh.take(40).forEach { adapter.add(it) }
-                    rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "0-9"), adapter))
-                }
-                for (letter in 'A'..'Z') {
-                    val lc = letter.lowercase()[0]
-                    val letterCh = sorted.filter { ch ->
-                        val first = ch.displayName.lowercase().firstOrNull()
-                        first != null && first == lc
-                    }
-                    if (letterCh.isNotEmpty()) {
-                        val adapter = ArrayObjectAdapter(presenter)
-                        letterCh.take(40).forEach { adapter.add(it) }
-                        rowsAdapter.add(ListRow(HeaderItem(rowIndex++, letter.toString()), adapter))
-                    }
-                }
-            }
-            SortMode.REGION -> {
-                val byRegion = all.filterNot { it.country.isNullOrBlank() }
-                    .groupBy { it.country!! }.entries.sortedBy { it.key }
-                for ((region, regionChs) in byRegion) {
-                    val adapter = ArrayObjectAdapter(presenter)
-                    liveFirst(regionChs).take(40).forEach { adapter.add(it) }
-                    rowsAdapter.add(ListRow(HeaderItem(rowIndex++, region), adapter))
-                }
-                val noRegion = all.filter { it.country.isNullOrBlank() }
-                if (noRegion.isNotEmpty()) {
-                    val adapter = ArrayObjectAdapter(presenter)
-                    liveFirst(noRegion).take(20).forEach { adapter.add(it) }
-                    rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Other"), adapter))
+    /** Refresh live badge renderings on all channel cards without rebuilding rows. */
+    private fun refreshLiveBadges() {
+        if (rowsAdapter.size() == 0) return
+        for (i in 0 until rowsAdapter.size()) {
+            val row = rowsAdapter.get(i) as? ListRow ?: continue
+            val adapter = row.adapter as? ArrayObjectAdapter ?: continue
+            for (j in 0 until adapter.size()) {
+                if (adapter.get(j) is Channel) {
+                    adapter.notifyArrayItemRangeChanged(j, 1)
                 }
             }
         }
-
-        // Radio
-        if (radioChannels.isNotEmpty()) {
-            val radioPresenter = TVChannelPresenter(
-                isFavorite = { ch -> ch.id in favoriteIds },
-                onToggleFavorite = { ch -> toggleFavorite(ch) },
-                isLive = { ch -> ch.id in liveIds },
-            )
-            val radioAdapter = ArrayObjectAdapter(radioPresenter)
-            radioChannels.take(40).forEach { radioAdapter.add(it) }
-            rowsAdapter.add(ListRow(HeaderItem(rowIndex++, "Radio"), radioAdapter))
-        }
-
-        // Settings
-        val settingsAdapter = ArrayObjectAdapter(TVSettingsCardPresenter())
-        settingsAdapter.add(SETTINGS_SENTINEL)
-        rowsAdapter.add(ListRow(HeaderItem(rowIndex, "Settings"), settingsAdapter))
     }
+
+
 
     private fun toggleFavorite(channel: Channel) {
         lifecycleScope.launch {

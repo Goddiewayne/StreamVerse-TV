@@ -37,14 +37,18 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
+import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.ChannelNavigationEngine
 import com.streamverse.core.data.PlaybackStateMachine
+import com.streamverse.core.data.SourceHealth
+import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.numberedDisplayName
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.domain.model.SourceType
+import com.streamverse.core.util.SourceSelector
 import com.streamverse.core.util.StreamInfo
 import com.streamverse.core.util.StreamLoadControl
 import com.streamverse.core.util.StreamPreResolver
@@ -79,6 +83,8 @@ class TVPlaybackActivity : ComponentActivity() {
     @Inject lateinit var streamPreResolver: StreamPreResolver
     @Inject lateinit var sourcePreferences: SourcePreferences
     @Inject lateinit var navigationEngine: ChannelNavigationEngine
+    @Inject lateinit var channelHealthEngine: ChannelHealthEngine
+    @Inject lateinit var sourceSelector: SourceSelector
 
     private val stateMachine = PlaybackStateMachine()
 
@@ -127,6 +133,7 @@ class TVPlaybackActivity : ComponentActivity() {
     // is always deliberate (never an accidental auto-switch on a stray DPAD press).
     private var sourceBarActive = false
     private var pendingSourceIndex = 0
+    private var healthJob: kotlinx.coroutines.Job? = null
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val hideOverlaysRunnable = Runnable { hideOverlays() }
@@ -243,7 +250,11 @@ class TVPlaybackActivity : ComponentActivity() {
             // Persist to "Continue Watching" — same SharedPreferences that TVBrowseFragment reads
             recordWatchHistory(channelId)
             buildSourceChips(ch)
-            playFromIndex(0)
+            // Use SourceSelector for intelligent default source selection
+            val selection = sourceSelector.selectBestSource(ch)
+            val startIdx = sourceOptions.indexOfFirst { it.first == selection.type }.coerceAtLeast(0)
+            observeSourceHealth(channelId)
+            playFromIndex(startIdx)
         }
     }
 
@@ -254,6 +265,7 @@ class TVPlaybackActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        healthJob?.cancel()
         handler.removeCallbacksAndMessages(null)
         mediaSession?.release()
         mediaSession = null
@@ -451,7 +463,9 @@ class TVPlaybackActivity : ComponentActivity() {
         selectedType = null
         sourceOptions = buildSourceOptions(target)
         if (sourceOptions.isEmpty()) { showStaticInternal("This channel isn't available on TV yet"); return }
-        currentOptionIndex = 0
+        val selection = sourceSelector.selectBestSource(target)
+        currentOptionIndex = sourceOptions.indexOfFirst { it.first == selection.type }.coerceAtLeast(0)
+        observeSourceHealth(target.id)
         zapIndex = zapChannels.indexOfFirst { it.id == target.id }.coerceAtLeast(0)
         recordWatchHistory(target.id)
         buildSourceChips(target)
@@ -467,7 +481,7 @@ class TVPlaybackActivity : ComponentActivity() {
                 progress.visibility = View.GONE     // NO spinner — current channel stays on screen
             }
         } else {
-            playFromIndex(0)                        // not pre-loaded → normal load (spinner)
+            playFromIndex(currentOptionIndex)       // smart-selected source
         }
     }
 
@@ -488,7 +502,9 @@ class TVPlaybackActivity : ComponentActivity() {
     private fun preloadChannel(target: Channel) {
         if (target.id == channel?.id) return
         if (nextPlayer != null && nextPlayerChannelId == target.id) return  // already preloading it
-        val type = buildSourceOptions(target).firstOrNull()?.first ?: return
+        val selection = sourceSelector.selectBestSource(target)
+        val type = sourceOptions.firstOrNull { it.first == selection.type }?.first
+            ?: buildSourceOptions(target).firstOrNull()?.first ?: return
 
         releaseNextPlayer()          // drop any previous (different-channel) preload
         nextPlayerChannelId = target.id
@@ -830,11 +846,16 @@ class TVPlaybackActivity : ComponentActivity() {
             val d = resources.displayMetrics.density
             h.name.text = ch.numberedDisplayName()
             h.name.setTextColor(if (selected) Color.WHITE else Color.parseColor("#C8D2DC"))
+            val isLive = channelHealthEngine.isLive(ch.id)
             h.meta.text = buildString {
-                ch.category?.takeIf { it.isNotBlank() }?.let { append(it) }
+                if (isLive) append("● LIVE")
+                ch.category?.takeIf { it.isNotBlank() }?.let {
+                    if (isNotEmpty()) append("  ·  "); append(it)
+                }
                 val q = channelQualityLabel(ch)
                 if (q.isNotEmpty()) { if (isNotEmpty()) append("  ·  "); append(q) }
             }
+            h.meta.setTextColor(if (isLive) Color.parseColor("#4ADE80") else Color.parseColor("#8593A2"))
             h.row.background = GradientDrawable().apply {
                 cornerRadius = 10 * d
                 setColor(if (selected) Color.parseColor("#2622D3EE") else Color.TRANSPARENT)
@@ -898,6 +919,7 @@ class TVPlaybackActivity : ComponentActivity() {
     private fun buildSourceChips(channel: Channel) {
         sourceChips.removeAllViews()
         val density = resources.displayMetrics.density
+        val perSourceHealth = channelHealthEngine.sourceHealthForChannel(channel.id)
         sourceOptions.forEachIndexed { index, (type, label) ->
             val chip = Button(this).apply {
                 text     = label
@@ -912,6 +934,18 @@ class TVPlaybackActivity : ComponentActivity() {
                 // Chooser navigation is managed by the activity (◄/► + OK), so chips don't take DPAD
                 // focus. Touch still works: tapping a chip IS an explicit confirm → switch.
                 isFocusable = false
+                // Health state indicator drawable
+                val health = perSourceHealth[type]
+                val stateDrawable = when (health?.state) {
+                    SourceHealthState.AVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#4CAF50"), density)
+                    SourceHealthState.VERIFYING -> createCircleDrawable(android.graphics.Color.parseColor("#FFA726"), density)
+                    SourceHealthState.UNAVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#EF5350"), density)
+                    else -> null
+                }
+                if (stateDrawable != null) {
+                    setCompoundDrawablesRelativeWithIntrinsicBounds(stateDrawable, null, null, null)
+                    compoundDrawablePadding = (6 * density).toInt()
+                }
                 background = android.graphics.drawable.GradientDrawable().apply {
                     cornerRadius = 40 * density
                     setColor(Color.parseColor("#33FFFFFF"))
@@ -957,6 +991,11 @@ class TVPlaybackActivity : ComponentActivity() {
      * ALL_SOURCES_EXHAUSTED to the state machine (which gates the TV static overlay).
      */
     private fun tryNextSource(): Boolean {
+        val failing = selectedType
+        val chId = channel?.id
+        if (chId != null && failing != null) {
+            channelHealthEngine.recordPlaybackFailure(chId, failing, "tryNextSource")
+        }
         val next = currentOptionIndex + 1
         if (next >= sourceOptions.size) {
             stateMachine.transition(PlaybackStateMachine.Event.ALL_SOURCES_EXHAUSTED)
@@ -1035,7 +1074,15 @@ class TVPlaybackActivity : ComponentActivity() {
      * handled centrally via the [stateMachine.onStateChanged] callback.
      */
     private val activeListener = object : Player.Listener {
-        override fun onIsPlayingChanged(isPlaying: Boolean) = refreshKeepScreenOn()
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            refreshKeepScreenOn()
+            if (isPlaying) {
+                val chId = channel?.id ?: return
+                val srcType = selectedType ?: return
+                channelHealthEngine.recordPlaybackSuccess(chId, srcType)
+            }
+        }
+
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = refreshKeepScreenOn()
 
         override fun onPlaybackStateChanged(state: Int) {
@@ -1053,10 +1100,16 @@ class TVPlaybackActivity : ComponentActivity() {
         override fun onPlayerError(error: PlaybackException) {
             handler.removeCallbacks(connectWatchdogRunnable)
             val p = player ?: return
+            val chId = channel?.id
+            val srcType = selectedType
 
             // Live-window drift: seek to live edge and resume (always allowed).
             if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                 p.seekToDefaultPosition(); p.prepare(); return
+            }
+            // Record playback failure for health tracking.
+            if (chId != null && srcType != null) {
+                channelHealthEngine.recordPlaybackFailure(chId, srcType, error.localizedMessage ?: "player_error")
             }
             stateMachine.transition(PlaybackStateMachine.Event.PLAYBACK_ERROR)
             if (stateMachine.state == PlaybackStateMachine.State.RECOVERING) {
@@ -1297,6 +1350,45 @@ class TVPlaybackActivity : ComponentActivity() {
             .split(",").filter { it.isNotBlank() }
         val updated  = (listOf(channelId) + existing.filter { it != channelId }).take(12)
         prefs.edit().putString("recent_channels", updated.joinToString(",")).apply()
+    }
+
+    private fun observeSourceHealth(channelId: String) {
+        healthJob?.cancel()
+        healthJob = lifecycleScope.launch {
+            channelHealthEngine.sourceHealthUpdates.collect { updates ->
+                val currentId = channel?.id ?: return@collect
+                val perSource = updates[currentId]
+                if (perSource != null) {
+                    runOnUiThread { refreshChipHealthIndicators(perSource) }
+                }
+            }
+        }
+    }
+
+    private fun refreshChipHealthIndicators(health: Map<SourceType, SourceHealth>) {
+        val d = resources.displayMetrics.density
+        for (i in 0 until sourceChips.childCount) {
+            val chip = sourceChips.getChildAt(i) as? Button ?: continue
+            val (type, _) = sourceOptions.getOrNull(i) ?: continue
+            val sh = health[type]
+            val drawable = when (sh?.state) {
+                SourceHealthState.AVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#4CAF50"), d)
+                SourceHealthState.VERIFYING -> createCircleDrawable(android.graphics.Color.parseColor("#FFA726"), d)
+                SourceHealthState.UNAVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#EF5350"), d)
+                else -> null
+            }
+            chip.setCompoundDrawablesRelativeWithIntrinsicBounds(drawable, null, null, null)
+            chip.compoundDrawablePadding = if (drawable != null) (6 * d).toInt() else 0
+        }
+    }
+
+    private fun createCircleDrawable(color: Int, density: Float): android.graphics.drawable.GradientDrawable {
+        val size = (8 * density).toInt()
+        return android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setSize(size, size)
+            setColor(color)
+        }
     }
 
     // -----------------------------------------------------------------------------------------

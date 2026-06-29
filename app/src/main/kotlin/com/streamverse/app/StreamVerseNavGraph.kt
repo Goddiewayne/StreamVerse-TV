@@ -35,7 +35,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -53,6 +52,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.streamverse.app.ui.category.ChannelListScreen
 import com.streamverse.app.ui.components.LocalLiveChannels
+import com.streamverse.app.ui.guide.TvGuideScreen
 import com.streamverse.app.ui.favorites.FavoritesScreen
 import com.streamverse.app.ui.home.HomeScreen
 import com.streamverse.app.ui.player.LocalMiniPlayerInset
@@ -63,6 +63,7 @@ import com.streamverse.app.ui.player.PlayerViewModel
 import com.streamverse.app.ui.schedule.ScheduleScreen
 import com.streamverse.app.ui.search.SearchScreen
 import com.streamverse.app.ui.settings.SettingsScreen
+import com.streamverse.app.ui.source.SourceManagementScreen
 import com.streamverse.app.ui.theme.CyberCyan
 import com.streamverse.app.ui.theme.ElectricViolet
 import com.streamverse.app.ui.theme.NavyCard
@@ -91,10 +92,18 @@ object ScheduleScreenRoute {
     const val route = "schedule"
 }
 
+object TvGuideRoute {
+    const val route = "tvguide"
+}
+
 object ChannelListRoute {
     const val route = "channels/{type}/{value}"
     fun createRoute(type: String, value: String) =
         "channels/${type}/${value.replace("/", "%2F")}"
+}
+
+object SourceManagementRoute {
+    const val route = "channel_sources"
 }
 
 val bottomNavItems = listOf(Screen.Home, Screen.Search, Screen.Favorites, Screen.Settings)
@@ -210,7 +219,7 @@ fun StreamVerseNavGraph(initialChannelId: String? = null, onNavigated: () -> Uni
                 composable(Screen.Home.route) {
                     HomeScreen(
                         onChannelClick = openChannel,
-                        onScheduleClick = { navController.navigate(ScheduleScreenRoute.route) },
+                        onGuideClick = { navController.navigate(TvGuideRoute.route) },
                         onSeeAllClick = { type, value -> navController.navigate(ChannelListRoute.createRoute(type, value)) },
                         onSearchClick = {
                             navController.navigate(Screen.Search.route) {
@@ -219,6 +228,12 @@ fun StreamVerseNavGraph(initialChannelId: String? = null, onNavigated: () -> Uni
                                 restoreState = true
                             }
                         },
+                    )
+                }
+                composable(TvGuideRoute.route) {
+                    TvGuideScreen(
+                        onChannelClick = openChannel,
+                        onBackClick = { navController.popBackStack() },
                     )
                 }
                 composable(Screen.Search.route) {
@@ -232,7 +247,14 @@ fun StreamVerseNavGraph(initialChannelId: String? = null, onNavigated: () -> Uni
                     )
                 }
                 composable(Screen.Settings.route) {
-                    SettingsScreen()
+                    SettingsScreen(
+                        onManageSources = { navController.navigate(SourceManagementRoute.route) },
+                    )
+                }
+                composable(SourceManagementRoute.route) {
+                    SourceManagementScreen(
+                        onBackClick = { navController.popBackStack() },
+                    )
                 }
                 // The player page is drawn by the persistent overlay below; this destination just
                 // owns the back stack entry (so Back collapses the player to the mini bar) and hides

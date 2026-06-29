@@ -15,6 +15,7 @@ import androidx.leanback.widget.Presenter
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.numberedDisplayName
 
 /**
  * Hero-sized featured card presenter (16:9 ratio, 380 × 214 dp) — used for the
@@ -32,7 +33,9 @@ import com.streamverse.core.domain.model.Channel
  *  │ Channel Name                                         │  ← bold, 18sp
  *  └──────────────────────────────────────────────────────┘
  */
-class TVFeaturedPresenter : Presenter() {
+class TVFeaturedPresenter(
+    private val isLive: (Channel) -> Boolean = { false },
+) : Presenter() {
 
     companion object {
         private const val CARD_WIDTH_DP  = 380
@@ -73,9 +76,10 @@ class TVFeaturedPresenter : Presenter() {
         val h  = vh as FeaturedHolder
         val ch = item as? Channel ?: return
 
-        h.name.text     = ch.displayName
+        h.name.text     = ch.numberedDisplayName()
         h.category.text = ch.category?.uppercase() ?: ""
         h.category.visibility = if (ch.category.isNullOrBlank()) View.GONE else View.VISIBLE
+        h.liveBadge.visibility = if (isLive(ch)) View.VISIBLE else View.GONE
 
         val fallback = base.letterDrawable(h.logo.context, ch.displayName)
         val url      = ch.logoUrl
@@ -94,7 +98,7 @@ class TVFeaturedPresenter : Presenter() {
 
     override fun onUnbindViewHolder(vh: ViewHolder) {
         val h = vh as FeaturedHolder
-        Glide.with(h.logo.context).clear(h.logo)
+        runCatching { Glide.with(h.logo.context).clear(h.logo) }
         h.logo.setImageDrawable(null)
     }
 

@@ -46,23 +46,17 @@ class StreamResolver @Inject constructor(
     }
 
     suspend fun resolve(sourceInfo: SourceInfo): Result<StreamInfo> {
-        return when (sourceInfo.type) {
-            SourceType.IPTV, SourceType.FREE_TV, SourceType.RADIO, SourceType.FAST_TV, SourceType.INDEPENDENT, SourceType.PREMIUM -> {
+        return when (SourceType.canonicalOf(sourceInfo.type)) {
+            SourceType.IPTV, SourceType.FREE_TV, SourceType.RADIO, SourceType.FAST_TV,
+            SourceType.VERIFIED, SourceType.PREMIUM, SourceType.BROADCASTER, SourceType.FREE_CHANNEL -> {
                 val url = sourceInfo.streamUrl
                 if (url != null) {
                     val isWebPage = isYouTube(url) || url.contains("channelstv.com/live")
                     if (isWebPage) {
-                        // YouTube live: resolve the real HLS manifest via the Innertube API (no
-                        // WebView) so it plays in ExoPlayer with our own chrome — plain TV, not
-                        // YouTube. If that fails, go straight to the WebView fallback (the hidden
-                        // HTML extractor is unreliable for YouTube and only adds latency). Never
-                        // wrap a page through the HLS restreaming proxy.
                         val hls = if (isYouTube(url)) youTubeLiveResolver.resolveHls(url) else null
                         if (hls != null) {
                             Result.success(StreamInfo(url = hls, headers = youTubeLiveResolver.playbackHeaders))
                         } else if (isYouTube(url)) {
-                            // No direct manifest — fall back to the clean embed player (just the
-                            // video) when we can resolve the live video id, else the channel page.
                             val embed = youTubeLiveResolver.resolveEmbedUrl(url) ?: url
                             Result.success(StreamInfo(url = embed, forceWebView = true))
                         } else {
@@ -83,23 +77,24 @@ class StreamResolver @Inject constructor(
                     }
                 } else Result.failure(Exception("No stream URL for ${sourceInfo.type} source"))
             }
-            SourceType.DLHD -> dlhdClient.resolveStreamUrl(sourceInfo.referenceId).map {
+            SourceType.SPORTS_EVENTS -> dlhdClient.resolveStreamUrl(sourceInfo.referenceId).map {
                 StreamInfo(it, requiresBrowser = it.contains("dlhd.pk/"))
             }
-            SourceType.STMIFY_FREE -> {
+            SourceType.WORLD_TV -> {
                 val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId)
                 if (direct.isSuccess) direct
                 else stmifyClient.resolveStreamUrl(sourceInfo.referenceId).map { StreamInfo(it, requiresBrowser = true) }
             }
-            SourceType.STMIFY_PREMIUM ->
-                stmifyClient.resolveStreamUrl(sourceInfo.referenceId).map { StreamInfo(it, requiresBrowser = true) }
+            // Deprecated types — handled by canonicalOf above, unreachable
+            SourceType.INDEPENDENT, SourceType.DLHD, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM ->
+                Result.failure(Exception("Deprecated source type"))
         }
     }
 
     suspend fun resolveAll(sourceInfo: SourceInfo): List<StreamInfo> {
         val urls = mutableListOf<StreamInfo>()
-        when (sourceInfo.type) {
-            SourceType.STMIFY_FREE -> {
+        when (SourceType.canonicalOf(sourceInfo.type)) {
+            SourceType.WORLD_TV -> {
                 val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId).getOrNull()
                 if (direct != null) urls.add(direct)
             }
@@ -122,14 +117,15 @@ class StreamResolver @Inject constructor(
 
     suspend fun resolveBestUrl(sources: Map<SourceType, SourceInfo>, preferredQuality: Quality? = null): Result<String> {
         val order = listOf(
-            SourceType.DLHD,
-            SourceType.STMIFY_FREE,
-            SourceType.STMIFY_PREMIUM,
+            SourceType.VERIFIED,
+            SourceType.BROADCASTER,
+            SourceType.FREE_CHANNEL,
+            SourceType.SPORTS_EVENTS,
+            SourceType.WORLD_TV,
             SourceType.IPTV,
             SourceType.FREE_TV,
             SourceType.FAST_TV,
             SourceType.PREMIUM,
-            SourceType.INDEPENDENT,
             SourceType.RADIO,
         )
         for (type in order) {

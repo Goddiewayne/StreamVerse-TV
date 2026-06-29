@@ -3,9 +3,11 @@ package com.streamverse.core.data
 import android.content.Context
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.SourceInfo
+import com.streamverse.core.data.source.provider.ProviderRegistry
 import com.streamverse.core.domain.model.SourceType
 import com.streamverse.core.util.StreamPreResolver
 import com.streamverse.core.util.StreamResolver
+import com.streamverse.core.util.SourceResolutionEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -62,6 +64,8 @@ class ChannelHealthEngine @Inject constructor(
     private val streamPreResolver: StreamPreResolver,
     private val streamResolver: StreamResolver,
     private val sourceHealth: SourceHealthPreferences,
+    private val sourceResolutionEngine: SourceResolutionEngine,
+    private val providerRegistry: ProviderRegistry,
 ) {
     private val prefs = context.getSharedPreferences("sv_channel_health", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
@@ -95,6 +99,12 @@ class ChannelHealthEngine @Inject constructor(
                 }
             }
         }
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(CLEANUP_INTERVAL_MS)
+                cleanup()
+            }
+        }
     }
 
     // ── Public API ───────────────────────────────────────────────────────────
@@ -108,19 +118,11 @@ class ChannelHealthEngine @Inject constructor(
      * Best source to open [channel] from: the last source that actually played it (persisted), else
      * the highest-priority source. The player's launch-time watchdog still handles live failover.
      */
-    fun bestSource(channel: Channel): SourceType? {
-        sourceHealth.lastGoodSource(channel.id)?.let { if (channel.sources.containsKey(it)) return it }
-        return SOURCE_PRIORITY.firstOrNull { channel.sources.containsKey(it) }
-            ?: channel.sources.keys.firstOrNull()
-    }
+    fun bestSource(channel: Channel): SourceType? =
+        sourceResolutionEngine.bestSource(channel)
 
-    /** All of [channel]'s sources in best-first order (last-good first, then priority). */
-    fun availableSources(channel: Channel): List<SourceType> {
-        val best = bestSource(channel)
-        val ordered = SOURCE_PRIORITY.filter { channel.sources.containsKey(it) } +
-            channel.sources.keys.filterNot { it in SOURCE_PRIORITY }
-        return (listOfNotNull(best) + ordered).distinct()
-    }
+    fun availableSources(channel: Channel): List<SourceType> =
+        channel.sources.keys.sortedBy { providerRegistry.priority(it) }
 
     /**
      * Schedule [channels] for verification, newest request first. [deep] permits a one-off stream
@@ -162,8 +164,11 @@ class ChannelHealthEngine @Inject constructor(
         }
 
         // 3. Curated sources are presumed live even if we couldn't obtain a probe URL cheaply.
-        if (channel.sources.containsKey(SourceType.INDEPENDENT)) {
-            record(id, true, -1, SourceType.INDEPENDENT, 0); return
+        if (channel.sources.containsKey(SourceType.VERIFIED)) {
+            record(id, true, -1, SourceType.VERIFIED, 0); return
+        }
+        if (channel.sources.containsKey(SourceType.BROADCASTER)) {
+            record(id, true, -1, SourceType.BROADCASTER, 0); return
         }
 
         record(id, false, -1, null, (prev?.failureStreak ?: 0) + 1)
@@ -236,6 +241,18 @@ class ChannelHealthEngine @Inject constructor(
         recomputeLiveIndex()
     }
 
+    private fun cleanup() {
+        val now = System.currentTimeMillis()
+        val stale = healthMap.filterValues { !it.isLive && now - it.checkedAt > STALE_ENTRY_AGE_MS }
+        stale.keys.forEach { healthMap.remove(it) }
+        if (healthMap.size > HEALTH_MAP_MAX_SIZE) {
+            val sorted = healthMap.entries.sortedBy { it.value.checkedAt }
+            val toRemove = sorted.take(healthMap.size - HEALTH_MAP_MAX_SIZE).map { it.key }
+            toRemove.forEach { healthMap.remove(it) }
+        }
+        if (stale.isNotEmpty() || healthMap.size > HEALTH_MAP_MAX_SIZE) recomputeLiveIndex()
+    }
+
     private companion object {
         const val MAX_CONCURRENT = 4
         const val PROBE_TIMEOUT_MS = 4_000L
@@ -245,16 +262,13 @@ class ChannelHealthEngine @Inject constructor(
         const val MAX_BACKOFF_MS = 60 * 60 * 1_000L
         const val MAX_PERSISTED = 1_500
         const val KEY_LIVE = "live"
+        const val STALE_ENTRY_AGE_MS = 24 * 60 * 60 * 1_000L
+        const val HEALTH_MAP_MAX_SIZE = 2_000
+        const val CLEANUP_INTERVAL_MS = 30 * 60 * 1_000L
         const val DEFAULT_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-        val SOURCE_PRIORITY = listOf(
-            SourceType.INDEPENDENT,
-            SourceType.DLHD,
-            SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
-            SourceType.IPTV, SourceType.FREE_TV, SourceType.FAST_TV,
-            SourceType.PREMIUM,
-            SourceType.RADIO,
-        )
+        // Priority is now centralized in ProviderRegistry
+    
     }
 }

@@ -13,7 +13,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -40,6 +39,7 @@ data class PremiumChannel(
 @Singleton
 class PremiumClient @Inject constructor(
     private val dispatchers: StreamVerseDispatchers,
+    private val healthTracker: SourceHealthTracker,
     okHttpClient: OkHttpClient,
     @ApplicationContext private val appContext: Context,
 ) {
@@ -48,8 +48,9 @@ class PremiumClient @Inject constructor(
         private const val PREFS = "premium_sources"
         private const val KEY_SOURCES_JSON = "sources_json"
         private const val KEY_DISCOVERED_AT = "discovered_at_ms"
-        private const val DISCOVERY_COOLDOWN_MS = 24L * 60 * 60 * 1000
-        private const val MAX_CONSECUTIVE_FAILURES = 2
+        private const val DISCOVERY_COOLDOWN_MS = 24L * 60 * 60 * 1000L
+        private const val MAX_DISCOVERED = 50
+        private const val MAX_NEW_PER_DISCOVERY = 5
     }
 
     private val fetchClient = okHttpClient.newBuilder()
@@ -73,7 +74,6 @@ class PremiumClient @Inject constructor(
     )
 
     @Volatile private var discoveredSources: Map<String, String> = emptyMap()
-    private val failureCounts = ConcurrentHashMap<String, Int>()
 
     init { loadDiscovered() }
 
@@ -103,6 +103,9 @@ class PremiumClient @Inject constructor(
     }
 
     private fun saveDiscovered() {
+        if (discoveredSources.size > MAX_DISCOVERED) {
+            discoveredSources = discoveredSources.entries.take(MAX_DISCOVERED).associate { it.key to it.value }
+        }
         prefs.edit().putString(KEY_SOURCES_JSON, gson.toJson(discoveredSources)).apply()
     }
 
@@ -111,15 +114,13 @@ class PremiumClient @Inject constructor(
 
     private fun reportResult(key: String, success: Boolean) {
         if (success) {
-            failureCounts.remove(key)
+            healthTracker.recordFetchResult(key, true, 0)
         } else {
-            val count = (failureCounts[key] ?: 0) + 1
-            failureCounts[key] = count
-            if (count >= MAX_CONSECUTIVE_FAILURES && key !in defaultSources) {
-                Log.w(TAG, "Removing dead source: $key ($count consecutive failures)")
+            healthTracker.recordFetchResult(key, false, 0)
+            if (healthTracker.shouldRemove(key) && key !in defaultSources) {
+                Log.w(TAG, "Removing dead source: $key")
                 discoveredSources = discoveredSources - key
                 saveDiscovered()
-                failureCounts.remove(key)
             }
         }
     }
@@ -129,13 +130,17 @@ class PremiumClient @Inject constructor(
     suspend fun fetchChannels(forceRefresh: Boolean = false): Result<List<PremiumChannel>> =
         withContext(dispatchers.io) {
             runCatching {
+                val sorted = healthTracker.getSortedSources(getSources())
+                Log.d(TAG, "Fetching ${sorted.size} sources (health: ${healthTracker.getSummary()})")
                 val all = coroutineScope {
-                    getSources().map { (key, url) ->
+                    sorted.map { (key, url) ->
                         async {
                             try {
+                                val t0 = System.currentTimeMillis()
                                 val entries = M3uParser.parse(url, fetchClient)
-                                reportResult(key, true)
-                                Log.d(TAG, "$key: ${entries.size} channels from $url")
+                                val elapsed = System.currentTimeMillis() - t0
+                                healthTracker.recordFetchResult(key, true, entries.size)
+                                Log.d(TAG, "$key: ${entries.size} channels in ${elapsed}ms from $url")
                                 entries.map { entry ->
                                     PremiumChannel(
                                         id      = "prem_${key}_${(entry.tvgId ?: entry.name).hashCode().and(0x7FFFFFFF)}",
@@ -153,8 +158,14 @@ class PremiumClient @Inject constructor(
                                     )
                                 }
                             } catch (e: Exception) {
-                                reportResult(key, false)
-                                Log.w(TAG, "$key failed: ${e.message}")
+                                healthTracker.recordFetchResult(key, false, 0)
+                                if (healthTracker.shouldRemove(key) && key !in defaultSources) {
+                                    Log.w(TAG, "Removing dead source: $key")
+                                    discoveredSources = discoveredSources - key
+                                    saveDiscovered()
+                                } else {
+                                    Log.w(TAG, "$key failed: ${e.message}")
+                                }
                                 emptyList()
                             }
                         }
@@ -177,9 +188,15 @@ class PremiumClient @Inject constructor(
             val lastDiscovery = prefs.getLong(KEY_DISCOVERED_AT, 0L)
 
             getSources().forEach { (key, url) ->
-                val ok = probeSource(url)
-                reportResult(key, ok)
+                val (ok, elapsed) = probeSource(url)
+                healthTracker.recordProbeResult(key, ok, elapsed)
+                if (!ok && healthTracker.shouldRemove(key) && key !in defaultSources) {
+                    Log.w(TAG, "Removing dead source during maintenance: $key")
+                    discoveredSources = discoveredSources - key
+                    saveDiscovered()
+                }
             }
+            Log.d(TAG, "Maintenance complete: ${healthTracker.getSummary()}")
 
             if (now - lastDiscovery > DISCOVERY_COOLDOWN_MS) {
                 discoverFromGitHub()
@@ -188,16 +205,18 @@ class PremiumClient @Inject constructor(
         }
     }
 
-    private fun probeSource(url: String): Boolean {
+    private fun probeSource(url: String): Pair<Boolean, Long> {
         var resp: okhttp3.Response? = null
         return try {
+            val t0 = System.nanoTime()
             val req = Request.Builder().url(url)
                 .header("User-Agent", "StreamVerse/1.0")
                 .header("Range", "bytes=0-511")
                 .build()
             resp = probeClient.newCall(req).execute()
-            resp.isSuccessful
-        } catch (e: Exception) { false }
+            val elapsed = (System.nanoTime() - t0) / 1_000_000L
+            resp.isSuccessful to elapsed
+        } catch (e: Exception) { false to 0L }
         finally { resp?.close() }
     }
 
@@ -222,9 +241,10 @@ class PremiumClient @Inject constructor(
             }
 
             if (candidates.isNotEmpty()) {
-                discoveredSources = discoveredSources + candidates
+                val capped = candidates.entries.take(MAX_NEW_PER_DISCOVERY).associate { it.key to it.value }
+                discoveredSources = discoveredSources + capped
                 saveDiscovered()
-                Log.i(TAG, "Discovered ${candidates.size} new source(s): ${candidates.keys}")
+                Log.i(TAG, "Discovered ${capped.size} new source(s): ${capped.keys}")
             }
         } catch (e: Exception) {
             Log.w(TAG, "GitHub discovery failed: ${e.message}")

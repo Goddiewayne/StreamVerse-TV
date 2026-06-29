@@ -12,6 +12,7 @@ import com.streamverse.core.domain.model.SourceType
 import com.streamverse.core.util.StreamInfo
 import com.streamverse.core.util.StreamPreResolver
 import com.streamverse.core.util.StreamResolver
+import com.streamverse.core.util.SourceResolutionEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -76,6 +77,7 @@ class PlayerViewModel @Inject constructor(
     private val watchHistory: WatchHistoryPreferences,
     private val sourceHealth: SourceHealthPreferences,
     private val sourcePreferences: SourcePreferences,
+    private val sourceResolutionEngine: SourceResolutionEngine,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PlayerUiState())
@@ -107,10 +109,12 @@ class PlayerViewModel @Inject constructor(
         // Default play order when a channel has multiple sources: curated/verified first, then
         // premium, then the scraped open sources.
         val SOURCE_PRIORITY = listOf(
-            SourceType.INDEPENDENT,
-            SourceType.DLHD,
-            SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
+            SourceType.VERIFIED, SourceType.INDEPENDENT,
+            SourceType.BROADCASTER,
+            SourceType.SPORTS_EVENTS, SourceType.DLHD,
+            SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
             SourceType.IPTV, SourceType.FREE_TV, SourceType.FAST_TV,
+            SourceType.FREE_CHANNEL,
             SourceType.PREMIUM,
             SourceType.RADIO,
         )
@@ -321,8 +325,9 @@ class PlayerViewModel @Inject constructor(
     private fun buildSourceOptions(channel: Channel): List<SourceOption> {
         val enabled = sourcePreferences.enabled()
         val seen = LinkedHashSet<com.streamverse.core.data.SourceProvider>()
+        val ranked = sourceResolutionEngine.rankSources(channel)
         val options = mutableListOf<SourceOption>()
-        for (type in SOURCE_PRIORITY) {
+        for (type in ranked) {
             val provider = com.streamverse.core.data.SourceProvider.forType(type)
             if (channel.sources.containsKey(type) && seen.add(provider) && enabled[provider] != false) {
                 options.add(SourceOption(type, provider.displayName))
@@ -355,8 +360,8 @@ class PlayerViewModel @Inject constructor(
         // On a cache hit the network round-trip is skipped entirely → instant playback start.
         val cached = streamPreResolver.getCached(channel.id, type)
         val resolved = (cached ?: streamResolver.resolveAll(info)).toMutableList()
-        // Stmify sources can also fall back to their web player page.
-        if (type == SourceType.STMIFY_FREE || type == SourceType.STMIFY_PREMIUM) {
+        // World TV sources can also fall back to their web player page.
+        if (type == SourceType.WORLD_TV || type == SourceType.STMIFY_FREE || type == SourceType.STMIFY_PREMIUM) {
             resolved.add(StreamInfo("https://stmify.com/live-tv/${info.referenceId}/", requiresBrowser = true))
         }
         val direct = resolved.filter { !it.requiresBrowser && !it.forceWebView }

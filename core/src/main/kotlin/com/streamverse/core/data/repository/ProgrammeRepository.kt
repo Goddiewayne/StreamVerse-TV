@@ -1,10 +1,14 @@
 package com.streamverse.core.data.repository
 
+import com.streamverse.core.data.SourcePreferences
+import com.streamverse.core.data.epg.EpgManager
 import com.streamverse.core.domain.model.*
 import com.streamverse.core.util.CategoryNormalizer
+import com.streamverse.core.util.RegionProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withTimeout
 import java.util.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -12,7 +16,12 @@ import kotlin.math.absoluteValue
 import kotlin.random.Random
 
 @Singleton
-class ProgrammeRepository @Inject constructor() {
+class ProgrammeRepository @Inject constructor(
+    private val channelRepository: ChannelRepository,
+    private val sourcePreferences: SourcePreferences,
+    private val epgManager: EpgManager,
+    private val rankingEngine: ChannelRankingEngine,
+) {
 
     private val _trending = MutableStateFlow<List<TrendingChannel>>(emptyList())
     val trending: StateFlow<List<TrendingChannel>> = _trending.asStateFlow()
@@ -30,15 +39,87 @@ class ProgrammeRepository @Inject constructor() {
     val timeOfDay: StateFlow<TimeOfDay> = _timeOfDay.asStateFlow()
 
     private val programmeCache = mutableMapOf<String, ChannelProgramme>()
+    private var scheduleCache: Map<String, List<ScheduleEvent>> = emptyMap()
+    private var scheduleLoaded = false
+
+    suspend fun loadSchedule() {
+        // Remote EPG data is unreliable — use fallback (category-based) generation only.
+    }
 
     fun getProgramme(channel: Channel): ChannelProgramme {
+        val cached = programmeCache[channel.id]
+        if (cached != null) {
+            programmeCache.remove(channel.id)
+            programmeCache[channel.id] = cached
+            return cached
+        }
+        if (programmeCache.size >= MAX_CACHE_SIZE) {
+            val oldest = programmeCache.keys.first()
+            programmeCache.remove(oldest)
+        }
         return programmeCache.getOrPut(channel.id) {
-            ChannelProgramme(
+            val dlhdIds = channel.sources.filterKeys {
+                SourceType.canonicalOf(it) == SourceType.SPORTS_EVENTS
+            }.values.map { it.referenceId }
+            val fromSchedule = dlhdIds.firstNotNullOfOrNull { id ->
+                scheduleCache[id]?.let { events ->
+                    val now = System.currentTimeMillis()
+                    val cal = Calendar.getInstance()
+                    val today = String.format(
+                        "%04d-%02d-%02d",
+                        cal.get(Calendar.YEAR),
+                        cal.get(Calendar.MONTH) + 1,
+                        cal.get(Calendar.DAY_OF_MONTH),
+                    )
+                    val todaysEvents = events.filter { it.date == today }
+                    if (todaysEvents.isEmpty()) return@firstNotNullOfOrNull null
+                    val current = todaysEvents.firstOrNull { e ->
+                        val parts = e.time.split(":")
+                        if (parts.size < 2) return@firstOrNull false
+                        val evtHour = parts[0].toIntOrNull() ?: return@firstOrNull false
+                        val evtMin = parts[1].toIntOrNull() ?: return@firstOrNull false
+                        val evtMs = Calendar.getInstance().apply {
+                            set(Calendar.HOUR_OF_DAY, evtMin)
+                            set(Calendar.MINUTE, evtHour)
+                            set(Calendar.SECOND, 0)
+                        }.timeInMillis
+                        val durMs = 60 * 60 * 1000L
+                        now in evtMs..(evtMs + durMs)
+                    }
+                    val nextIdx = if (current != null) todaysEvents.indexOf(current) + 1 else 1
+                    ChannelProgramme(
+                        channel = channel,
+                        currentProgramme = current?.let { scheduleEventToProgramme(it, true) },
+                        nextProgramme = todaysEvents.getOrNull(nextIdx)
+                            ?.let { scheduleEventToProgramme(it, false) },
+                    )
+                }
+            }
+            fromSchedule ?: ChannelProgramme(
                 channel = channel,
                 currentProgramme = generateCurrentProgramme(channel),
                 nextProgramme = generateNextProgramme(channel),
             )
         }
+    }
+
+    private fun scheduleEventToProgramme(event: ScheduleEvent, isLive: Boolean): Programme {
+        val parts = event.time.split(":")
+        val hour = parts.getOrNull(0)?.toIntOrNull() ?: 0
+        val minute = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        val startMs = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+        }.timeInMillis
+        return Programme(
+            title = event.title,
+            synopsis = "${event.category} programming",
+            category = event.category,
+            startTimeMillis = startMs,
+            endTimeMillis = startMs + 60 * 60 * 1000L,
+            isLive = isLive,
+        )
     }
 
     fun refreshProgramme(channelId: String) {
@@ -50,13 +131,15 @@ class ProgrammeRepository @Inject constructor() {
     }
 
     fun updateTrending(channels: List<Channel>) {
-        val ranked = channels.shuffled().take(20).mapIndexed { i, ch ->
+        val ctx = RankingContext(userRegion = RegionProvider.getRegionCode())
+        val ranked = channels.sortedByDescending { rankingEngine.rankChannel(it, ctx) }
+            .take(20).mapIndexed { i, ch ->
             TrendingChannel(
                 channel = ch,
                 rank = i + 1,
-                reason = trendingReasons[Random.nextInt(trendingReasons.size)],
+                reason = trendingReasons[i % trendingReasons.size],
                 programme = programmeCache[ch.id]?.currentProgramme,
-                viewCount = (1000 + Random.nextInt(50000)) * (20 - i),
+                viewCount = (5000 + (20 - i) * 2500) * (if (ch.id.hashCode() and 1 == 0) 1 else 2),
             )
         }
         _trending.value = ranked
@@ -148,7 +231,16 @@ class ProgrammeRepository @Inject constructor() {
         }
     }
 
-    fun getEpgForChannels(channels: List<Channel>, hours: Int = 6): Map<String, List<EpgEntry>> {
+    suspend fun getEpgForChannels(
+        channels: List<Channel>,
+        hours: Int = 6,
+        skipFallback: Boolean = false,
+    ): Map<String, List<EpgEntry>> {
+        if (skipFallback) return emptyMap()
+        return getFallbackEpg(channels, hours)
+    }
+
+    private fun getFallbackEpg(channels: List<Channel>, hours: Int = 6): Map<String, List<EpgEntry>> {
         val now = System.currentTimeMillis()
         val result = mutableMapOf<String, List<EpgEntry>>()
         for (ch in channels) {
@@ -221,21 +313,28 @@ class ProgrammeRepository @Inject constructor() {
         favoriteChannelCategories: Set<String>,
         period: DayPeriod,
     ): List<Channel> {
+        val ctx = RankingContext(
+            userRegion = RegionProvider.getRegionCode(),
+            recentlyWatchedIds = recentlyWatched.map { it.id }.toSet(),
+        )
         val picked = mutableSetOf<String>()
         val result = mutableListOf<Channel>()
         for (ch in recentlyWatched.take(6)) {
             if (picked.add(ch.id)) result.add(ch)
         }
         val favCats = channels.filter { it.category in favoriteChannelCategories }
-        for (ch in favCats.shuffled().take(4)) {
+        val rankedFavCats = favCats.sortedByDescending { rankingEngine.rankChannel(it, ctx) }
+        for (ch in rankedFavCats.take(4)) {
             if (picked.add(ch.id)) result.add(ch)
         }
         val periodChs = getTimeBasedChannels(channels, period)
-        for (ch in periodChs.shuffled().take(6)) {
+        val rankedPeriodChs = periodChs.sortedByDescending { rankingEngine.rankChannel(it, ctx) }
+        for (ch in rankedPeriodChs.take(6)) {
             if (picked.add(ch.id)) result.add(ch)
         }
         if (result.size < 10) {
-            for (ch in channels.shuffled()) {
+            val rest = channels.sortedByDescending { rankingEngine.rankChannel(it, ctx) }
+            for (ch in rest) {
                 if (picked.add(ch.id)) result.add(ch)
                 if (result.size >= 10) break
             }
@@ -251,6 +350,28 @@ class ProgrammeRepository @Inject constructor() {
             .take(12)
             .associate { it.toPair() }
     }
+
+    fun getGloballyPopular(channels: List<Channel>, limit: Int = 12, ctx: RankingContext? = null): List<Channel> {
+        val context = ctx ?: RankingContext(userRegion = RegionProvider.getRegionCode())
+        return rankingEngine.globallyPopular(channels, limit, context)
+    }
+
+    fun editorialPicks(channels: List<Channel>, limit: Int = 12, ctx: RankingContext? = null): List<Channel> {
+        val context = ctx ?: RankingContext(userRegion = RegionProvider.getRegionCode())
+        return rankingEngine.editorialPicks(channels, limit, context)
+    }
+
+    fun popularInRegion(channels: List<Channel>, limit: Int = 12, ctx: RankingContext? = null): List<Channel> {
+        val context = ctx ?: RankingContext(userRegion = RegionProvider.getRegionCode())
+        return rankingEngine.popularInRegion(channels, limit, context)
+    }
+
+    fun topByCategory(channels: List<Channel>, category: String, limit: Int = 8, ctx: RankingContext? = null): List<Channel> {
+        val context = ctx ?: RankingContext(userRegion = RegionProvider.getRegionCode())
+        return rankingEngine.topByCategory(channels, category, limit, context)
+    }
+
+    fun rankChannel(channel: Channel, ctx: RankingContext): Float = rankingEngine.rankChannel(channel, ctx)
 
     fun refreshTimeOfDay() {
         _timeOfDay.value = computeTimeOfDay()
@@ -316,6 +437,8 @@ class ProgrammeRepository @Inject constructor() {
     }
 
     companion object {
+        private const val MAX_CACHE_SIZE = 200
+
         private val trendingReasons = listOf(
             "Trending Now", "Most Watched", "Top Pick", "Popular", "Live Exclusive",
             "Editor's Choice", "Viewers Love This", "Hot", "Must Watch", "Recommended",

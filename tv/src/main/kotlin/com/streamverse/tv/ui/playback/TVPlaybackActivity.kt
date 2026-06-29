@@ -37,10 +37,12 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
+import com.streamverse.core.data.ChannelNavigationEngine
+import com.streamverse.core.data.PlaybackStateMachine
 import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.domain.model.Channel
-import com.streamverse.core.domain.model.SortMode
+import com.streamverse.core.domain.model.numberedDisplayName
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.domain.model.SourceType
 import com.streamverse.core.util.StreamInfo
@@ -76,6 +78,9 @@ class TVPlaybackActivity : ComponentActivity() {
     @Inject lateinit var resolver: StreamResolver
     @Inject lateinit var streamPreResolver: StreamPreResolver
     @Inject lateinit var sourcePreferences: SourcePreferences
+    @Inject lateinit var navigationEngine: ChannelNavigationEngine
+
+    private val stateMachine = PlaybackStateMachine()
 
     private var player: ExoPlayer? = null
     // Secondary player for seamless channel switching — pre-loads the next channel
@@ -103,8 +108,6 @@ class TVPlaybackActivity : ComponentActivity() {
     private lateinit var signalOsd: View
     private lateinit var signalHeadline: TextView
     private lateinit var signalDetail: TextView
-    // True while the no-signal screen (snow + OSD) is up, so DPAD-OK maps to "retry".
-    private var noSignalVisible = false
     private val osdRecedeRunnable = Runnable { signalOsd.animate().alpha(0.12f).setDuration(600).start() }
     private lateinit var nowPlayingBar: View
     private lateinit var channelNameView: TextView
@@ -127,15 +130,23 @@ class TVPlaybackActivity : ComponentActivity() {
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val hideOverlaysRunnable = Runnable { hideOverlays() }
-    /** Single reusable retry runnable — same instance so [Handler.removeCallbacks] always works. */
-    private val retryRunnable = Runnable { player?.prepare() }
-    private var retryCount = 0
-    // True while a retry is scheduled — keeps the screen awake through the backoff gap.
-    private var retryPending = false
 
-    // Once the source has reached STATE_READY (playing), auto-source-fallback is disabled.
-    // A mid-playback error shows the no-signal static; only the user can switch sources.
-    private var sourceHasEverPlayed = false
+    // ── Playback state machine ──────────────────────────────────────────────────────
+    // Gates the TV static overlay: visible ONLY when state == UNAVAILABLE.
+    private val staticFadeInRunnable = Runnable { fadeInStaticInternal() }
+    private val staticFadeOutRunnable = Runnable { fadeOutStaticInternal() }
+
+    init {
+        stateMachine.onStateChanged = { s ->
+            android.util.Log.d("TVPlayback", "State: $s")
+            when (s) {
+                PlaybackStateMachine.State.UNAVAILABLE -> showStaticInternal()
+                PlaybackStateMachine.State.IDLE -> {}
+                else -> hideStaticInternal()
+            }
+            updateProgressVisibility()
+        }
+    }
 
     // ── Connect watchdog ────────────────────────────────────────────────────────────────
     // If a source hasn't started playing within CONNECT_TIMEOUT_MS after startPlayback,
@@ -143,8 +154,7 @@ class TVPlaybackActivity : ComponentActivity() {
     private val connectWatchdogRunnable = Runnable { connectWatchdogFire() }
     private fun connectWatchdogFire() {
         android.util.Log.w("TVPlayback", "connect watchdog fired — advancing to next source")
-        if (tryNextSource()) return
-        showNoSignal("Connection timed out — try another source")
+        tryNextSource()
     }
     private val connectTimeoutMs = 25_000L
 
@@ -206,19 +216,30 @@ class TVPlaybackActivity : ComponentActivity() {
         if (channelId.isNullOrBlank()) { finish(); return }
 
         lifecycleScope.launch {
+            val allChannels = repository.getCachedChannels()
+            navigationEngine.rebuild(allChannels)
             if (repository.getChannelById(channelId) == null) {
                 repository.load()
             }
             val ch = repository.getChannelById(channelId)
-            if (ch == null) { showNoSignal("Channel not found"); return@launch }
-            channel = ch
-            sourceOptions = buildSourceOptions(ch)
-            if (sourceOptions.isEmpty()) {
-                showNoSignal("This channel isn't available on TV yet")
+            if (ch == null) {
+                stateMachine.transition(PlaybackStateMachine.Event.LOAD)
+                stateMachine.transition(PlaybackStateMachine.Event.ALL_SOURCES_EXHAUSTED)
                 return@launch
             }
-            // Build the channel-surf list so ▲/▼ can flip channels without leaving the player.
-            buildZapList(ch, repository.getCachedChannels())
+            channel = ch
+            sourceOptions = buildSourceOptions(ch)
+            stateMachine.setHasFallbackSource(sourceOptions.size > 1)
+            if (sourceOptions.isEmpty()) {
+                stateMachine.transition(PlaybackStateMachine.Event.LOAD)
+                stateMachine.transition(PlaybackStateMachine.Event.ALL_SOURCES_EXHAUSTED)
+                return@launch
+            }
+            stateMachine.transition(PlaybackStateMachine.Event.LOAD)
+            // Build the channel-surf list from the canonical navigation engine.
+            val playableIds = allChannels.filter { buildSourceOptions(it).isNotEmpty() }.map { it.id }.toSet()
+            zapChannels = navigationEngine.buildPlayableDial(playableIds, channelId)
+            zapIndex = zapChannels.indexOfFirst { it.id == channelId }.coerceAtLeast(0)
             // Persist to "Continue Watching" — same SharedPreferences that TVBrowseFragment reads
             recordWatchHistory(channelId)
             buildSourceChips(ch)
@@ -243,8 +264,7 @@ class TVPlaybackActivity : ComponentActivity() {
         pendingSwapChannelId = null
         pendingPreloadChannel = null
         playerView.player = null
-        retryCount = 0
-        retryPending = false
+        stateMachine.reset()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
@@ -349,11 +369,19 @@ class TVPlaybackActivity : ComponentActivity() {
                         // no-signal screen, where picking another source is usually the fix.
                         // (OK on the already-selected source then just re-tunes = retry.)
                         sourceOptions.size > 1 -> openSourceBar()
-                        // Single-source no-signal: OK retries the only source there is.
-                        noSignalVisible -> playFromIndex(currentOptionIndex)
+                        // Single-source on static: OK retries the only source there is.
+                        stateMachine.shouldShowStatic -> playFromIndex(currentOptionIndex)
                         nowPlayingBar.visibility == View.VISIBLE -> hideOverlays()
                         else -> showOverlays()
                     }
+                    return true
+                }
+                // ── Digit keys (0-9): reserved for future use ──────────────
+                android.view.KeyEvent.KEYCODE_0, android.view.KeyEvent.KEYCODE_1,
+                android.view.KeyEvent.KEYCODE_2, android.view.KeyEvent.KEYCODE_3,
+                android.view.KeyEvent.KEYCODE_4, android.view.KeyEvent.KEYCODE_5,
+                android.view.KeyEvent.KEYCODE_6, android.view.KeyEvent.KEYCODE_7,
+                android.view.KeyEvent.KEYCODE_8, android.view.KeyEvent.KEYCODE_9 -> {
                     return true
                 }
             }
@@ -364,21 +392,6 @@ class TVPlaybackActivity : ComponentActivity() {
     // -----------------------------------------------------------------------------------------
     // Live channel surfing ("zapping") — ▲/▼ flip channels in-place, like a TV remote
     // -----------------------------------------------------------------------------------------
-
-    /**
-     * Builds the ordered list the viewer surfs through with ▲/▼.  Prefers the current
-     * channel's category-mates (so surfing stays within "Sports", "News", …); falls back
-     * to the whole playable catalogue when the category is too small to be useful.
-     */
-    private fun buildZapList(current: Channel, all: List<Channel>) {
-        val playable = all.filter { buildSourceOptions(it).isNotEmpty() }
-        val sameCategory = playable.filter {
-            !current.category.isNullOrBlank() && it.category == current.category
-        }
-        zapChannels = if (sameCategory.size >= 2) sameCategory else playable
-        if (zapChannels.isEmpty()) zapChannels = listOf(current)
-        zapIndex = zapChannels.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
-    }
 
     /** Surf [delta] channels up (−1) or down (+1).  Debounced: the card flips instantly,
      *  the stream tunes once the viewer settles — exactly how channel-surfing feels. */
@@ -403,17 +416,17 @@ class TVPlaybackActivity : ComponentActivity() {
         requestTune(target)
     }
 
-/** Flip the now-playing card to [target] without yet tuning — shows a peek of the
+    /** Flip the now-playing card to [target] without yet tuning — shows a peek of the
      *  channels above and below on the dial, giving a live "mini guide" feel. */
     private fun showZapPreview(target: Channel) {
         nowPlayingBar.visibility = View.VISIBLE
         sourceBar.visibility = View.GONE
-        hideStatic()
+        hideStaticInternal()
         progress.visibility = View.VISIBLE
-        channelNameView.text = target.displayName
+        channelNameView.text = target.numberedDisplayName()
         val n = zapChannels.size
-        val up   = zapChannels[(zapIndex - 1 + n) % n].displayName
-        val down = zapChannels[(zapIndex + 1) % n].displayName
+        val up   = zapChannels[(zapIndex - 1 + n) % n].numberedDisplayName()
+        val down = zapChannels[(zapIndex + 1) % n].numberedDisplayName()
         val q = channelQualityLabel(target)
         channelMetaView.text = buildString {
             target.category?.takeIf { it.isNotBlank() }?.let { append(it) }
@@ -437,7 +450,7 @@ class TVPlaybackActivity : ComponentActivity() {
         channel = target
         selectedType = null
         sourceOptions = buildSourceOptions(target)
-        if (sourceOptions.isEmpty()) { showNoSignal("This channel isn't available on TV yet"); return }
+        if (sourceOptions.isEmpty()) { showStaticInternal("This channel isn't available on TV yet"); return }
         currentOptionIndex = 0
         zapIndex = zapChannels.indexOfFirst { it.id == target.id }.coerceAtLeast(0)
         recordWatchHistory(target.id)
@@ -527,7 +540,7 @@ class TVPlaybackActivity : ComponentActivity() {
             exo.setMediaItem(
                 MediaItem.Builder().setUri(stream.url).setMediaMetadata(
                     MediaMetadata.Builder()
-                        .setTitle(target.displayName).setStation(target.displayName)
+                        .setTitle(target.numberedDisplayName()).setStation(target.numberedDisplayName())
                         .setArtist(target.category)
                         .setArtworkUri(target.logoUrl?.let { android.net.Uri.parse(it) })
                         .build(),
@@ -554,17 +567,11 @@ class TVPlaybackActivity : ComponentActivity() {
 
         val old = player
         val oldSession = mediaSession
-        handler.removeCallbacks(retryRunnable)
         handler.removeCallbacks(connectWatchdogRunnable)
-        retryCount = 0
-        retryPending = false
 
         player = np
         selectedType = sourceOptions.firstOrNull()?.first
         np.addListener(activeListener)
-        // Preloaded player was already STATE_READY — mark source as having played so errors
-        // during its tenure show static rather than auto-fallbacking to the next source.
-        sourceHasEverPlayed = nextPlayerReady || sourceHasEverPlayed
         playerView.player = np
         np.playWhenReady = true
         mediaSession = MediaSession.Builder(this, np)
@@ -574,7 +581,7 @@ class TVPlaybackActivity : ComponentActivity() {
         old?.release()
 
         progress.visibility = View.GONE
-        hideStatic()
+        hideStaticInternal()
         highlightSelectedChip()
         updateNowPlayingOverlay()
         refreshKeepScreenOn()
@@ -631,7 +638,7 @@ class TVPlaybackActivity : ComponentActivity() {
      *  the same source re-tunes it (retry); otherwise an unchanged pick just closes the chooser. */
     private fun commitSourceSelection() {
         sourceBarActive = false
-        if (pendingSourceIndex != currentOptionIndex || noSignalVisible) playFromIndex(pendingSourceIndex)
+        if (pendingSourceIndex != currentOptionIndex || stateMachine.shouldShowStatic) playFromIndex(pendingSourceIndex)
         else hideOverlays()
     }
 
@@ -746,21 +753,11 @@ class TVPlaybackActivity : ComponentActivity() {
         guideChannels.getOrNull(guideIndex)?.let { schedulePreload(it) }
     }
 
-    /** Orders the guide the same way the home page is grouped (Category / A–Z / Region). */
-    private fun orderedForGuide(channels: List<Channel>): List<Channel> = when (readGuideSort()) {
-        SortMode.ALPHABETICAL -> channels.sortedBy { it.displayName.lowercase() }
-        SortMode.CATEGORY -> channels.sortedWith(
-            compareBy({ it.category?.lowercase() ?: "￿" }, { it.displayName.lowercase() }),
-        )
-        SortMode.REGION -> channels.sortedWith(
-            compareBy({ it.country?.lowercase() ?: "￿" }, { it.displayName.lowercase() }),
-        )
+    /** Orders the guide using the canonical [ChannelNavigationEngine] ordering. */
+    private fun orderedForGuide(channels: List<Channel>): List<Channel> {
+        val ids = channels.mapTo(java.util.HashSet()) { it.id }
+        return navigationEngine.canonical.filter { it.id in ids }
     }
-
-    /** Reads the sort mode the user last chose on the TV home screen (persisted by TVBrowseFragment). */
-    private fun readGuideSort(): SortMode =
-        getSharedPreferences("sv_tv_history", MODE_PRIVATE).getString("sort_mode", null)
-            ?.let { runCatching { SortMode.valueOf(it) }.getOrNull() } ?: SortMode.CATEGORY
 
     private fun centerGuideOn(position: Int) {
         (guideList.layoutManager as? LinearLayoutManager)
@@ -831,7 +828,7 @@ class TVPlaybackActivity : ComponentActivity() {
             val ch = guideChannels[position]
             val selected = position == guideIndex
             val d = resources.displayMetrics.density
-            h.name.text = ch.displayName
+            h.name.text = ch.numberedDisplayName()
             h.name.setTextColor(if (selected) Color.WHITE else Color.parseColor("#C8D2DC"))
             h.meta.text = buildString {
                 ch.category?.takeIf { it.isNotBlank() }?.let { append(it) }
@@ -865,8 +862,8 @@ class TVPlaybackActivity : ComponentActivity() {
 
     private fun showOverlays() {
         nowPlayingBar.visibility = View.VISIBLE
-        // Show source bar for multi-source channels, or when an error is visible (retry).
-        if (sourceOptions.size > 1 || noSignalVisible) {
+        // Show source bar for multi-source channels, or when static is visible (retry).
+        if (sourceOptions.size > 1 || stateMachine.shouldShowStatic) {
             sourceBar.visibility = View.VISIBLE
             highlightSelectedChip()
         }
@@ -887,7 +884,7 @@ class TVPlaybackActivity : ComponentActivity() {
     private fun updateNowPlayingOverlay() {
         val ch = channel ?: return
         val option = sourceOptions.getOrNull(currentOptionIndex)
-        channelNameView.text = ch.displayName
+        channelNameView.text = ch.numberedDisplayName()
         channelMetaView.text = buildString {
             ch.category?.takeIf { it.isNotBlank() }?.let { append(it).append("  ·  ") }
             option?.let { append(it.second) }
@@ -956,18 +953,17 @@ class TVPlaybackActivity : ComponentActivity() {
     // -----------------------------------------------------------------------------------------
 
     /**
-     * Try the next source option for the current channel. Returns false if no sources remain
-     * (all have been exhausted — the channel will resolve to no-signal static).
+     * Try the next source option for the current channel. If no sources remain, signals
+     * ALL_SOURCES_EXHAUSTED to the state machine (which gates the TV static overlay).
      */
     private fun tryNextSource(): Boolean {
         val next = currentOptionIndex + 1
-        if (next >= sourceOptions.size) return false
+        if (next >= sourceOptions.size) {
+            stateMachine.transition(PlaybackStateMachine.Event.ALL_SOURCES_EXHAUSTED)
+            return false
+        }
         currentOptionIndex = next
-        // Cancel any in-flight retry and connect watchdog for the previous source before switching
-        handler.removeCallbacks(retryRunnable)
         handler.removeCallbacks(connectWatchdogRunnable)
-        retryCount = 0
-        retryPending = false
         refreshKeepScreenOn()
         playFromIndex(currentOptionIndex)
         return true
@@ -978,19 +974,17 @@ class TVPlaybackActivity : ComponentActivity() {
         currentOptionIndex = index
         val (type, _) = sourceOptions[index]
         selectedType = type
-        // Reset retry and playback state for this new source
-        handler.removeCallbacks(retryRunnable)
-        retryCount = 0
-        retryPending = false
-        sourceHasEverPlayed = false
+        // Enter LOADING from whatever state we're in
+        stateMachine.transition(PlaybackStateMachine.Event.CHANNEL_CHANGE)
+        if (stateMachine.state != PlaybackStateMachine.State.LOADING) {
+            stateMachine.transition(PlaybackStateMachine.Event.LOAD)
+        }
         highlightSelectedChip()
         updateNowPlayingOverlay()
-        showOverlays() // always show "now playing" when switching or starting
-
+        showOverlays()
         progress.visibility = View.VISIBLE
 
         lifecycleScope.launch {
-            // Check pre-resolved cache first (populated during D-Pad browse focus)
             val cached = streamPreResolver.getCached(ch.id, type)
                 ?.firstOrNull { !it.requiresBrowser && !it.forceWebView }
 
@@ -1001,22 +995,22 @@ class TVPlaybackActivity : ComponentActivity() {
             }
 
             if (stream == null) {
-                // This source couldn't resolve — try the next one before surrendering to static
-                if (!tryNextSource()) {
-                    showNoSignal("This source isn't available — try another")
-                }
+                tryNextSource()
                 return@launch
             }
+            stateMachine.transition(PlaybackStateMachine.Event.URL_RESOLVED)
             startPlayback(stream)
         }
     }
 
-    /** Hold the screen awake while playing, buffering, or mid-retry; release it otherwise. */
+    /** Hold the screen awake while playing or any active loading/recovery state. */
     private fun refreshKeepScreenOn() {
-        val p = player
-        val playing = p != null && p.playWhenReady &&
-            p.playbackState != Player.STATE_IDLE && p.playbackState != Player.STATE_ENDED
-        val active = playing || retryPending
+        val active = stateMachine.state in setOf(
+            PlaybackStateMachine.State.LOADING,
+            PlaybackStateMachine.State.BUFFERING,
+            PlaybackStateMachine.State.RECOVERING,
+            PlaybackStateMachine.State.FAILED,
+        ) || (player?.let { it.playWhenReady && it.playbackState == Player.STATE_READY } == true)
         if (active) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
@@ -1024,10 +1018,21 @@ class TVPlaybackActivity : ComponentActivity() {
         }
     }
 
+    private fun updateProgressVisibility() {
+        progress.visibility = when (stateMachine.state) {
+            PlaybackStateMachine.State.LOADING,
+            PlaybackStateMachine.State.BUFFERING,
+            PlaybackStateMachine.State.RECOVERING,
+            PlaybackStateMachine.State.SWITCHING_SOURCES,
+            PlaybackStateMachine.State.FAILED -> View.VISIBLE
+            else -> View.GONE
+        }
+    }
+
     /**
-     * Listener for whichever ExoPlayer is currently ACTIVE (the foreground [player]). Extracted so
-     * a pre-loaded player promoted via [performSwap] inherits the same keep-screen-on, buffering,
-     * and retry behaviour. All retry actions target [player] so they follow the swap.
+     * Listener for whichever ExoPlayer is currently ACTIVE. All state transitions route through
+     * the [PlaybackStateMachine] so static gating, progress visibility, and screen-on are
+     * handled centrally via the [stateMachine.onStateChanged] callback.
      */
     private val activeListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) = refreshKeepScreenOn()
@@ -1036,14 +1041,10 @@ class TVPlaybackActivity : ComponentActivity() {
         override fun onPlaybackStateChanged(state: Int) {
             refreshKeepScreenOn()
             when (state) {
-                Player.STATE_BUFFERING -> progress.visibility = View.VISIBLE
+                Player.STATE_BUFFERING -> Unit
                 Player.STATE_READY -> {
-                    sourceHasEverPlayed = true
-                    retryCount = 0
-                    retryPending = false
-                    progress.visibility = View.GONE
+                    stateMachine.transition(PlaybackStateMachine.Event.PLAYBACK_READY)
                     handler.removeCallbacks(connectWatchdogRunnable)
-                    hideStatic()       // recovery: snow fades out, video fades in
                 }
                 else -> Unit
             }
@@ -1052,73 +1053,26 @@ class TVPlaybackActivity : ComponentActivity() {
         override fun onPlayerError(error: PlaybackException) {
             handler.removeCallbacks(connectWatchdogRunnable)
             val p = player ?: return
-            android.util.Log.w("TVPlayback", "error code=${error.errorCode} retry=$retryCount sourceHasEverPlayed=$sourceHasEverPlayed")
 
             // Live-window drift: seek to live edge and resume (always allowed).
             if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                 p.seekToDefaultPosition(); p.prepare(); return
             }
-
-            // Once the source has played, never auto-fallback — show no-signal and let the user
-            // manually switch sources or retry.  This preserves the "it was working, now it's
-            // not" expectation.
-            if (sourceHasEverPlayed) {
-                retryPending = false
-                refreshKeepScreenOn()
-                progress.visibility = View.GONE
-                handler.removeCallbacks(retryRunnable)
-                showNoSignal(error.localizedMessage ?: "Playback error")
-                return
-            }
-
-            // Network/timeout/CDN errors: retry the same source with capped exponential backoff.
-            if (error.errorCode in RETRIABLE_ERROR_CODES) {
-                retryCount++
-                // Give this source MAX_RETRIES attempts before advancing to the next source.
-                // A transient network blip gets retried; a genuinely dead stream moves on.
-                if (retryCount >= MAX_RETRIES_BEFORE_SOURCE_SWITCH) {
-                    retryPending = false
-                    refreshKeepScreenOn()
-                    progress.visibility = View.GONE
-                    handler.removeCallbacks(retryRunnable)
-                    if (tryNextSource()) return
-                    // Fall through to no-signal if all sources are exhausted
-                } else {
-                    retryPending = true
-                    refreshKeepScreenOn()
-                    // The first quick retry stays seamless (frozen frame). If it persists, drop to
-                    // the analogue snow — "Signal Lost / Reconnecting…" — until the stream comes
-                    // back, so a genuine outage looks like a TV losing reception, not a frozen app.
-                    if (retryCount >= 2) showNoSignal(error.localizedMessage ?: "network")
-                    val delay = minOf(RETRY_BASE_MS * (1L shl minOf(retryCount - 1, 4)), RETRY_MAX_MS)
-                    handler.postDelayed(retryRunnable, delay)
-                    return
-                }
-            }
-            // Permanent format/codec errors or exhausted retries — try the next source before
-            // surrendering to the no-signal static.
-            retryPending = false
-            refreshKeepScreenOn()
-            progress.visibility = View.GONE
-            handler.removeCallbacks(retryRunnable)
-            if (!tryNextSource()) {
-                showNoSignal("This source isn't playable — try another")
+            stateMachine.transition(PlaybackStateMachine.Event.PLAYBACK_ERROR)
+            if (stateMachine.state == PlaybackStateMachine.State.RECOVERING) {
+                tryNextSource()
             }
         }
     }
 
     @OptIn(UnstableApi::class)
     private fun startPlayback(stream: StreamInfo) {
-        // Starting a fresh load supersedes any in-flight preload/seamless swap.
         pendingSwapChannelId = null
         handler.removeCallbacks(preloadRunnable)
         releaseNextPlayer()
         player?.release()
         mediaSession?.release()
         mediaSession = null
-        handler.removeCallbacks(retryRunnable)
-        retryCount = 0
-        retryPending = false
 
         val dataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(USER_AGENT)
@@ -1177,8 +1131,8 @@ class TVPlaybackActivity : ComponentActivity() {
             .setUri(stream.url)
             .setMediaMetadata(
                 MediaMetadata.Builder()
-                    .setTitle(ch?.displayName ?: "StreamVerse TV")
-                    .setStation(ch?.displayName)
+                    .setTitle(ch?.numberedDisplayName() ?: "StreamVerse TV")
+                    .setStation(ch?.numberedDisplayName())
                     .setArtist(ch?.category)
                     .setArtworkUri(ch?.logoUrl?.let { android.net.Uri.parse(it) })
                     .setIsBrowsable(false)
@@ -1256,37 +1210,53 @@ class TVPlaybackActivity : ComponentActivity() {
      * recedes — instead of a black screen or an error dialog. [raw] is any technical error/status;
      * it is mapped to television-style copy so the user reads "lost signal", never a stack trace.
      */
-    private fun showNoSignal(raw: String?) {
+    private fun showStaticInternal(raw: String? = null) {
         val msg = com.streamverse.core.ui.SignalMessages.forError(raw)
         progress.visibility = View.GONE
         nowPlayingBar.visibility = View.GONE
         sourceBar.visibility = View.GONE
-        restoreConfiguredIntensity()   // a prior tuning burst may have dropped it to LOW
+        restoreConfiguredIntensity()
+        handler.removeCallbacks(staticFadeOutRunnable)
+        handler.removeCallbacks(osdRecedeRunnable)
 
         signalHeadline.text = msg.headline.uppercase()
         signalDetail.text = msg.detail
         signalOsd.visibility = View.VISIBLE
 
-        if (!noSignalVisible) {
-            noSignalVisible = true
+        if (noSignalOverlay.visibility != View.VISIBLE) {
             noSignalOverlay.alpha = 0f
-            noSignalOverlay.visibility = View.VISIBLE       // starts the snow (visibility-driven)
+            noSignalOverlay.visibility = View.VISIBLE
             noSignalOverlay.animate().alpha(1f).setDuration(450).start()
         }
-        // OSD breathes in, then steps back so the snow takes over — like a real off-air channel.
         signalOsd.alpha = 0f
         signalOsd.animate().alpha(1f).setDuration(500).start()
-        handler.removeCallbacks(osdRecedeRunnable)
         handler.postDelayed(osdRecedeRunnable, 4500)
     }
 
     /** Fade the snow away (on recovery, or whenever real video is taking over) and reset it. */
-    private fun hideStatic() {
+    private fun hideStaticInternal() {
+        handler.removeCallbacks(staticFadeInRunnable)
         handler.removeCallbacks(osdRecedeRunnable)
-        noSignalVisible = false
         if (noSignalOverlay.visibility != View.VISIBLE) return
         noSignalOverlay.animate().alpha(0f).setDuration(350).withEndAction {
-            noSignalOverlay.visibility = View.GONE          // stops the snow (visibility-driven)
+            noSignalOverlay.visibility = View.GONE
+            restoreConfiguredIntensity()
+        }.start()
+    }
+
+    /** Fade the snow in (delayed — used by [staticFadeInRunnable]). */
+    private fun fadeInStaticInternal() {
+        if (noSignalOverlay.visibility == View.VISIBLE) return
+        noSignalOverlay.alpha = 0f
+        noSignalOverlay.visibility = View.VISIBLE
+        noSignalOverlay.animate().alpha(1f).setDuration(450).start()
+    }
+
+    /** Fade the snow out (delayed — used by [staticFadeOutRunnable]). */
+    private fun fadeOutStaticInternal() {
+        if (noSignalOverlay.visibility != View.VISIBLE) return
+        noSignalOverlay.animate().alpha(0f).setDuration(350).withEndAction {
+            noSignalOverlay.visibility = View.GONE
             restoreConfiguredIntensity()
         }.start()
     }
@@ -1298,7 +1268,7 @@ class TVPlaybackActivity : ComponentActivity() {
      */
     private fun showTuningBurst() {
         handler.removeCallbacks(osdRecedeRunnable)
-        noSignalVisible = false
+        handler.removeCallbacks(staticFadeInRunnable)
         val burst = getSharedPreferences("playback_prefs", MODE_PRIVATE)
             .getBoolean("static_channel_burst", true)
         if (!burst) {
@@ -1342,28 +1312,16 @@ class TVPlaybackActivity : ComponentActivity() {
         private const val ZAP_TUNE_DELAY_MS = 450L
         // Settle time before a highlighted/previewed channel begins pre-loading for a seamless swap.
         private const val PRELOAD_DEBOUNCE_MS = 200L
-        private const val RETRY_BASE_MS = 2_000L
-        private const val RETRY_MAX_MS  = 30_000L
-        // How many times to retry the same source before giving up and trying the next one.
-        // With exponential backoff this gives ~62 s of retry time before switching sources.
-        private const val MAX_RETRIES_BEFORE_SOURCE_SWITCH = 5
-        private val RETRIABLE_ERROR_CODES = setOf(
-            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
-            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
-            PlaybackException.ERROR_CODE_TIMEOUT,
-            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
-            PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,
-            PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW,
-        )
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         private val SOURCE_PRIORITY = listOf(
-            SourceType.INDEPENDENT,
-            SourceType.DLHD,
-            SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
+            SourceType.VERIFIED, SourceType.INDEPENDENT,
+            SourceType.BROADCASTER,
+            SourceType.SPORTS_EVENTS, SourceType.DLHD,
+            SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
             SourceType.IPTV, SourceType.FREE_TV, SourceType.FAST_TV,
+            SourceType.FREE_CHANNEL,
             SourceType.PREMIUM,
             SourceType.RADIO,
         )

@@ -1,0 +1,51 @@
+{
+  "pluto": {
+    "url": "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/plutotv_all.m3u",
+    "name": "Pluto TV",
+    "origin": "Direct Pluto CDN via service-stitcher.clusters.pluto.tv / amagi.tv",
+    "geo": "US",
+    "notes": "300+ channels. Free ad-supported. Direct HLS from Paramount."
+  },
+  "plex": {
+    "url": "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/plex_all.m3u",
+    "name": "Plex Live TV",
+    "origin": "Plex EPG provider CDN via epg.provider.plex.tv / AWS MediaTailor",
+    "geo": "US",
+    "notes": "600+ channels. Free with Plex account. Direct HLS."
+  },
+  "roku": {
+    "url": "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/roku_all.m3u",
+    "name": "The Roku Channel",
+    "origin": "Roku CDN via roku.link / therokuchannel.roku.com",
+    "geo": "US",
+    "notes": "500+ channels. Free ad-supported. Direct HLS."
+  },
+  "tubi": {
+    "url": "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/tubi_all.m3u",
+    "name": "Tubi Live TV",
+    "origin": "Tubi CDN via tubitv.com / Fox-owned infrastructure",
+    "geo": "US",
+    "notes": "250+ live channels. Free ad-supported. Direct HLS."
+  },
+  "xumo": {
+    "url": "https://www.apsattv.com/xumo.m3u",
+    "name": "Xumo Play",
+    "origin": "Xumo/Comcast CDN via frequency.stream / amagi.tv / NBCUniversal",
+    "geo": "US",
+    "notes": "350+ channels. Free. Many channels on amagi.tv CDN."
+  },
+  "distro": {
+    "url": "https://www.apsattv.com/distro.m3u",
+    "name": "Distro TV",
+    "origin": "DistroTV CDN via distro.tv / cloudfront.net",
+    "geo": "ALL",
+    "notes": "Global niche channels. No geo-lock. International."
+  },
+  "free_tv_aggregator": {
+    "url": "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8",
+    "name": "Free-TV/IPTV (Aggregator)",
+    "origin": "Community-curated. Pulls from Pluto, Plex, Roku, Samsung TV Plus, PBS, YouTube live channels",
+    "geo": "VARIES",
+    "notes": "Quality-curated playlist. HD only. Covers PBS, Pluto, Roku, Samsung TV Plus and OTA channels."
+  }
+}

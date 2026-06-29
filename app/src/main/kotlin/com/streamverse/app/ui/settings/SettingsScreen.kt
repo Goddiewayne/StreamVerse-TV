@@ -17,15 +17,22 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Star
+
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -33,16 +40,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.streamverse.core.data.CacheStats
+import com.streamverse.core.data.CacheTier
 import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.VideoResizeMode
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+
 
 import androidx.compose.ui.unit.dp
 import com.streamverse.app.ui.theme.CyberCyan
@@ -51,16 +62,18 @@ import com.streamverse.app.ui.theme.NavyCard
 
 @Composable
 fun SettingsScreen(
+    onManageSources: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val enabledSources by viewModel.enabledSources.collectAsStateWithLifecycle()
-    val reloading by viewModel.reloading.collectAsStateWithLifecycle()
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
     val backgroundPlayback by viewModel.backgroundPlayback.collectAsStateWithLifecycle()
     val resizeMode by viewModel.resizeMode.collectAsStateWithLifecycle()
     val staticIntensity by viewModel.staticIntensity.collectAsStateWithLifecycle()
     val staticAudio by viewModel.staticAudio.collectAsStateWithLifecycle()
     val staticChannelBurst by viewModel.staticChannelBurst.collectAsStateWithLifecycle()
+    val cacheStats by viewModel.cacheStats.collectAsStateWithLifecycle()
+    val totalCacheSize by viewModel.totalCacheSize.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier
@@ -103,65 +116,163 @@ fun SettingsScreen(
         ) {
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Data sources section
+            // Data sources — management console entry
             SettingsSectionHeader(
                 icon = Icons.Outlined.Star,
-                title = "Data Sources",
+                title = "Channel Sources",
             )
             Text(
-                text = if (reloading) "Refreshing channels…"
-                       else "Toggle which providers channels are fetched from",
+                text = "Manage providers, health, priority, and failover",
                 style = MaterialTheme.typography.bodySmall,
-                color = if (reloading) CyberCyan else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
 
             val providers = SourceProvider.entries
+            val channelCounts by viewModel.sourceChannelCounts.collectAsStateWithLifecycle()
+            val enabledCount = enabledSources.count { it.value }
             Column(
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
                     .background(NavyCard),
             ) {
-                providers.forEachIndexed { idx, provider ->
-                    val isEnabled = enabledSources[provider] ?: true
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onManageSources)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "$enabledCount of ${providers.size} providers enabled",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Tap to manage all source providers",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(CyberCyan.copy(alpha = 0.15f))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Manage",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = CyberCyan,
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Outlined.ArrowForward,
+                            contentDescription = null,
+                            tint = CyberCyan,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
+
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Cache management section
+            SettingsSectionHeader(
+                icon = Icons.Outlined.DeleteSweep,
+                title = "Cache",
+            )
+            Text(
+                text = "Total: $totalCacheSize — cached data speeds up browsing and enables offline use",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            Column(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(NavyCard),
+            ) {
+                cacheStats.forEachIndexed { idx, stat ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(role = Role.Switch) {
-                                viewModel.toggleSource(provider, !isEnabled)
-                            }
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = provider.displayName,
+                                text = stat.tier.label,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                             Text(
-                                text = provider.description,
+                                text = formatCacheTierSubtitle(stat),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Switch(
-                            checked = isEnabled,
-                            onCheckedChange = { viewModel.toggleSource(provider, it) },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = CyberCyan,
-                                uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                uncheckedTrackColor = NavyCard,
-                            ),
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = formatCacheBytes(stat.sizeBytes),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = CyberCyan,
+                            modifier = Modifier.padding(end = 8.dp),
                         )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFFFF3B30).copy(alpha = 0.15f))
+                                .clickable { viewModel.clearCacheTier(stat.tier) }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = "Clear",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFF3B30),
+                            )
+                        }
                     }
-                    if (idx < providers.lastIndex) {
+                    if (idx < cacheStats.lastIndex) {
                         HorizontalDivider(
                             modifier = Modifier.padding(start = 16.dp),
                             color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                    }
+                }
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.clearAllCache() }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Clear All Cache",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFFFF3B30),
+                        )
+                        Text(
+                            text = "Remove all cached data — next launch will re-download everything",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -513,4 +624,21 @@ private fun SettingsSectionHeader(icon: ImageVector, title: String) {
             color = CyberCyan,
         )
     }
+}
+
+private fun formatCacheBytes(bytes: Long): String = when {
+    bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
+    bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
+    bytes >= 1024 -> "%.0f KB".format(bytes / 1024.0)
+    else -> "$bytes B"
+}
+
+private fun formatCacheTierSubtitle(stat: CacheStats): String {
+    val ttl = when (stat.tier) {
+        CacheTier.HOT -> "30 min TTL"
+        CacheTier.WARM -> "2 hour TTL"
+        CacheTier.COLD -> "24 hour TTL"
+    }
+    val items = if (stat.entryCount > 0) "${stat.entryCount} items" else "empty"
+    return "$items · $ttl"
 }

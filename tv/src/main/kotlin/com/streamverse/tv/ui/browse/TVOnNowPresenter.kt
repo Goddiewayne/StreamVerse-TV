@@ -19,6 +19,7 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.numberedDisplayName
 
 /**
  * "On Now" rail card — wide cinematic tile framing a channel as *live right now*.
@@ -30,7 +31,9 @@ import com.streamverse.core.domain.model.Channel
  *  │  Category · Watch live           ╚══════╝  │
  *  └────────────────────────────────────────────┘
  */
-class TVOnNowPresenter : Presenter() {
+class TVOnNowPresenter(
+    private val isLive: (Channel) -> Boolean = { false },
+) : Presenter() {
 
     companion object {
         const val CARD_WIDTH_DP  = 360
@@ -44,6 +47,7 @@ class TVOnNowPresenter : Presenter() {
         val logo:     ImageView = root.findViewWithTag("logo")
         val name:     TextView  = root.findViewWithTag("name")
         val meta:     TextView  = root.findViewWithTag("meta")
+        val livePill: View      = root.findViewWithTag("livePill")
         val liveDot:  View      = root.findViewWithTag("liveDot")
         var pulse:    ObjectAnimator? = null
     }
@@ -66,10 +70,12 @@ class TVOnNowPresenter : Presenter() {
         val h = vh as OnNowHolder
         val ch = item as? Channel ?: return
 
-        h.name.text = ch.displayName
+        h.name.text = ch.numberedDisplayName()
+        val live = isLive(ch)
+        h.livePill.visibility = if (live) View.VISIBLE else View.GONE
         h.meta.text = buildString {
             ch.category?.takeIf { it.isNotBlank() }?.let { append(it).append("  ·  ") }
-            append("Watch live")
+            append(if (live) "Watch live" else "Browse")
         }
 
         val model = com.streamverse.core.util.ChannelLogoResolver.model(ch)
@@ -89,13 +95,17 @@ class TVOnNowPresenter : Presenter() {
 
         // Pulsing LIVE dot
         h.pulse?.cancel()
-        h.liveDot.alpha = 1f
-        h.pulse = ObjectAnimator.ofFloat(h.liveDot, "alpha", 1f, 0.25f).apply {
-            duration = 900
-            repeatCount = ObjectAnimator.INFINITE
-            repeatMode = ObjectAnimator.REVERSE
-            interpolator = AccelerateDecelerateInterpolator()
-            start()
+        if (live) {
+            h.liveDot.alpha = 1f
+            h.pulse = ObjectAnimator.ofFloat(h.liveDot, "alpha", 1f, 0.25f).apply {
+                duration = 900
+                repeatCount = ObjectAnimator.INFINITE
+                repeatMode = ObjectAnimator.REVERSE
+                interpolator = AccelerateDecelerateInterpolator()
+                start()
+            }
+        } else {
+            h.liveDot.alpha = 0f
         }
     }
 
@@ -103,7 +113,7 @@ class TVOnNowPresenter : Presenter() {
         val h = vh as OnNowHolder
         h.pulse?.cancel()
         h.pulse = null
-        Glide.with(h.logo.context).clear(h.logo)
+        runCatching { Glide.with(h.logo.context).clear(h.logo) }
         h.logo.setImageDrawable(null)
     }
 
@@ -171,6 +181,7 @@ class TVOnNowPresenter : Presenter() {
 
         // LIVE badge (top-start): pulsing dot + static label on dark pill
         val livePill = LinearLayout(ctx).apply {
+            tag = "livePill"
             gravity = Gravity.CENTER_VERTICAL
             orientation = LinearLayout.HORIZONTAL
             background = GradientDrawable().apply {

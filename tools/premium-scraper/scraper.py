@@ -26,7 +26,7 @@ from pathlib import Path
 
 import requests
 
-from hunters import GithubHunter, TelegramHunter, PastebinHunter, AggregatorHunter, ResellerHunter
+from hunters import GithubHunter, TelegramHunter, PastebinHunter, AggregatorHunter, ResellerHunter, BroadcasterHunter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -218,6 +218,10 @@ def run_hunters(selected: list[str], telethon: bool) -> list[str]:
         log.info("=== Reseller panels hunter ===")
         found.extend(ResellerHunter())
 
+    if "broadcasters" in selected:
+        log.info("=== Broadcaster CDN hunter ===")
+        found.extend(BroadcasterHunter())
+
     # Deduplicate
     seen = set()
     unique = []
@@ -235,8 +239,8 @@ def main():
     )
     parser.add_argument(
         "--hunters",
-        default="github,telegram,pastebin,aggregators",
-        help="Comma-separated hunters: github,telegram,pastebin,aggregators,resellers (default: all)",
+        default="github,telegram,pastebin,aggregators,broadcasters",
+        help="Comma-separated hunters: github,telegram,pastebin,aggregators,resellers,broadcasters (default: all)",
     )
     parser.add_argument("--telethon-client", action="store_true",
                         help="Use Telethon for Telegram (needs TELEGRAM_API_ID/HASH env vars)")

@@ -1,6 +1,7 @@
 package com.streamverse.app.ui.schedule
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,8 +15,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -24,10 +27,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.streamverse.core.domain.model.ScheduleDay
 import com.streamverse.core.domain.model.ScheduleEvent
 
@@ -36,8 +43,9 @@ import com.streamverse.core.domain.model.ScheduleEvent
 fun ScheduleScreen(
     onChannelClick: (String) -> Unit,
     onBack: () -> Unit,
+    viewModel: ScheduleViewModel = hiltViewModel(),
 ) {
-    val scheduleDays = emptyList<ScheduleDay>()
+    val state by viewModel.state.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
@@ -47,49 +55,86 @@ fun ScheduleScreen(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                 }
             },
+            actions = {
+                IconButton(onClick = { viewModel.refresh() }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                }
+            },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = MaterialTheme.colorScheme.background,
             ),
         )
 
-        if (scheduleDays.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "Schedule requires an API key.\nSee settings to configure.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        when (val s = state) {
+            is ScheduleUiState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
             }
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                scheduleDays.forEach { day ->
-                    item {
+            is ScheduleUiState.Error -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = day.date,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(16.dp, 8.dp),
+                            text = s.message,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(32.dp),
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Pull to refresh or tap the refresh icon to retry",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    day.events.forEach { (category, events) ->
-                        item {
-                            Text(
-                                text = category,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        items(events) { event ->
-                            ScheduleEventCard(event = event, onClick = {
-                                event.channelIds.firstOrNull()?.let { onChannelClick(it) }
-                            })
-                        }
-                    }
+                }
+            }
+            is ScheduleUiState.Success -> {
+                ScheduleContent(
+                    days = s.days,
+                    onChannelClick = onChannelClick,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScheduleContent(
+    days: List<ScheduleDay>,
+    onChannelClick: (String) -> Unit,
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        days.forEach { day ->
+            item {
+                Text(
+                    text = day.date,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(16.dp, 8.dp),
+                )
+            }
+            day.events.forEach { (category, events) ->
+                item {
+                    Text(
+                        text = category,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                items(events) { event ->
+                    ScheduleEventCard(event = event, onClick = {
+                        event.channelIds.firstOrNull()?.let { onChannelClick(it) }
+                    })
                 }
             }
         }

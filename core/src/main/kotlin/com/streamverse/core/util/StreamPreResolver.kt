@@ -1,5 +1,6 @@
 package com.streamverse.core.util
 
+import com.streamverse.core.data.source.provider.ProviderRegistry
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.SourceType
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +34,7 @@ import javax.inject.Singleton
 @Singleton
 class StreamPreResolver @Inject constructor(
     private val streamResolver: StreamResolver,
+    private val providerRegistry: ProviderRegistry,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeJobs = ConcurrentHashMap<String, Job>()
@@ -51,7 +53,7 @@ class StreamPreResolver @Inject constructor(
      * running for this channel.  Callers should debounce by ~300 ms on fast D-Pad scrolling.
      */
     fun preResolve(channel: Channel) {
-        val (type, sourceInfo) = PRIORITY
+        val (type, sourceInfo) = providerRegistry.prioritySorted()
             .mapNotNull { t -> channel.sources[t]?.let { t to it } }
             .firstOrNull() ?: return
 
@@ -85,15 +87,6 @@ class StreamPreResolver @Inject constructor(
         private const val TTL_MS = 3 * 60 * 1_000L
         private const val MAX_ENTRIES = 30
 
-        // Resolution priority order — matches TVPlaybackActivity source chips, best TV-playable first
-        private val PRIORITY = listOf(
-            SourceType.INDEPENDENT,
-            SourceType.DLHD,
-            SourceType.STMIFY_FREE,
-            SourceType.IPTV,
-            SourceType.FREE_TV,
-            SourceType.FAST_TV,
-            SourceType.RADIO,
-        )
+        // Priority is now centralized in ProviderRegistry
     }
 }

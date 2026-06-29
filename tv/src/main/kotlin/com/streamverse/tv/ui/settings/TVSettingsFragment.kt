@@ -7,7 +7,9 @@ import androidx.leanback.app.GuidedStepSupportFragment
 import androidx.leanback.widget.GuidanceStylist
 import androidx.leanback.widget.GuidedAction
 import androidx.lifecycle.lifecycleScope
+import com.streamverse.core.data.CacheTier
 import com.streamverse.core.data.PlaybackPreferences
+import com.streamverse.core.data.SmartCacheManager
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.repository.ChannelRepository
@@ -15,33 +17,13 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/**
- * TV-native settings screen using leanback's GuidedStepSupportFragment.
- *
- * Layout: left panel shows title + description ("Guidance"); right panel shows a
- * scrollable list of actions (source provider checkboxes, playback toggles).
- *
- *  Section: Data Sources
- *    ☑ Live Sports & TV     ← each SourceProvider as a checkbox
- *    ☑ World TV
- *    ☑ Global Channels
- *    … (all 9 providers)
- *
- *  Section: Playback
- *    ☐ Keep Screen On
- *    ○ Video: Fit / Fill / Zoom
- *
- *  Section: About
- *    (version info — non-clickable)
- */
 @AndroidEntryPoint
 class TVSettingsFragment : GuidedStepSupportFragment() {
 
     @Inject lateinit var sourcePreferences:  SourcePreferences
     @Inject lateinit var playbackPreferences: PlaybackPreferences
     @Inject lateinit var channelRepository:   ChannelRepository
-
-    // ---- Guidance panel (left side) -------------------------------------------------
+    @Inject lateinit var smartCacheManager:   SmartCacheManager
 
     override fun onCreateGuidance(savedInstanceState: Bundle?): GuidanceStylist.Guidance =
         GuidanceStylist.Guidance(
@@ -51,8 +33,6 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
             null,
         )
 
-    // ---- Actions list (right side) --------------------------------------------------
-
     override fun onCreateActions(
         actions: MutableList<GuidedAction>,
         savedInstanceState: Bundle?,
@@ -61,16 +41,47 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
         actions.add(sectionHeader(ID_SOURCES_HEADER, "Data Sources"))
 
         SourceProvider.entries.forEachIndexed { i, provider ->
+            val enabled = sourcePreferences.isEnabled(provider)
+            val count = countChannelsFor(provider)
+            val countLabel = formatChannelCount(count)
+            val desc = buildString {
+                append(provider.description)
+                if (!enabled) append(" (disabled)")
+                else append(" — $countLabel channels")
+            }
             actions.add(
                 GuidedAction.Builder(requireContext())
                     .id(ID_SOURCE_BASE + i)
                     .title(provider.displayName)
-                    .description(provider.description)
+                    .description(desc)
                     .checkSetId(GuidedAction.CHECKBOX_CHECK_SET_ID)
-                    .checked(sourcePreferences.isEnabled(provider))
+                    .checked(enabled)
                     .build()
             )
         }
+
+        // ── Cache management section ────────────────────────────────────────────────
+        actions.add(sectionHeader(ID_CACHE_HEADER, "Cache"))
+
+        for (tier in CacheTier.entries) {
+            val size = smartCacheManager.tierSizeBytes(tier)
+            val sizeLabel = formatBytes(size)
+            actions.add(
+                GuidedAction.Builder(requireContext())
+                    .id(ID_CACHE_BASE + tier.ordinal)
+                    .title("${tier.label}")
+                    .description("$sizeLabel — tap to clear")
+                    .build()
+            )
+        }
+
+        actions.add(
+            GuidedAction.Builder(requireContext())
+                .id(ID_CACHE_CLEAR_ALL)
+                .title("Clear All Cache")
+                .description("Remove all cached data — next launch re-downloads everything")
+                .build()
+        )
 
         // ── Playback section header ──────────────────────────────────────────────────
         actions.add(sectionHeader(ID_PLAYBACK_HEADER, "Playback"))
@@ -178,20 +189,25 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
         )
     }
 
-    // ---- Interaction ----------------------------------------------------------------
-
     override fun onGuidedActionClicked(action: GuidedAction) {
         when {
             // Source provider toggle
             action.id in ID_SOURCE_BASE until ID_SOURCE_BASE + SourceProvider.entries.size -> {
                 val provider = SourceProvider.entries[(action.id - ID_SOURCE_BASE).toInt()]
-                // setEnabled emits on enabledFlow, so the browse/home rows re-filter INSTANTLY
-                // (the reactive channels flow is collected by TVBrowseFragment). Enabling also needs
-                // a reload to fetch the newly-turned-on provider's catalogue; we reload on every
-                // toggle so the home screen always reflects the current source selection — matching
-                // the mobile app, which reloads on each toggle too.
                 sourcePreferences.setEnabled(provider, action.isChecked)
-                lifecycleScope.launch { runCatching { channelRepository.reload() } }
+                rebuildActions()
+            }
+
+            // Cache tier clear
+            action.id in ID_CACHE_BASE until ID_CACHE_BASE + CacheTier.entries.size -> {
+                val tier = CacheTier.entries[(action.id - ID_CACHE_BASE).toInt()]
+                smartCacheManager.evict(tier)
+                rebuildActions()
+            }
+
+            action.id == ID_CACHE_CLEAR_ALL -> {
+                smartCacheManager.evictAll()
+                rebuildActions()
             }
 
             action.id == ID_KEEP_SCREEN_ON -> {
@@ -228,7 +244,11 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
         }
     }
 
-    // ---- Helpers --------------------------------------------------------------------
+    private fun rebuildActions() {
+        val actions = mutableListOf<GuidedAction>()
+        onCreateActions(actions, null)
+        setActions(actions)
+    }
 
     private fun sectionHeader(id: Long, title: String): GuidedAction =
         GuidedAction.Builder(requireContext())
@@ -237,14 +257,35 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
             .infoOnly(true)
             .build()
 
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
+        bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
+        bytes >= 1024 -> "%.0f KB".format(bytes / 1024.0)
+        else -> "$bytes B"
+    }
+
+    private fun countChannelsFor(provider: SourceProvider): Int {
+        val all = channelRepository.getAllChannels()
+        return all.count { ch -> ch.sources.keys.any { SourceProvider.forType(it) == provider } }
+    }
+
+    private fun formatChannelCount(count: Int): String = when {
+        count >= 10_000 -> "%.1fk".format(count / 1_000.0)
+        count >= 1_000 -> "%.1fk".format(count / 1_000.0)
+        else -> "$count"
+    }
+
     companion object {
         private const val ID_SOURCES_HEADER = 1L
         private const val ID_SOURCE_BASE    = 100L    // 100–108 (9 providers)
+        private const val ID_CACHE_HEADER   = 150L
+        private const val ID_CACHE_BASE     = 151L   // 151–153 (3 tiers)
+        private const val ID_CACHE_CLEAR_ALL = 154L
         private const val ID_PLAYBACK_HEADER = 200L
         private const val ID_KEEP_SCREEN_ON  = 201L
         private const val ID_VIDEO_FIT       = 202L
-        private const val ID_VIDEO_FILL      = 203L
-        private const val ID_VIDEO_ZOOM      = 204L
+        private const val ID_VIDEO_FILL       = 203L
+        private const val ID_VIDEO_ZOOM       = 204L
         private const val ID_STATIC_HEADER        = 210L
         private const val ID_STATIC_LOW           = 211L
         private const val ID_STATIC_MEDIUM        = 212L
@@ -255,7 +296,6 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
         private const val ID_ABOUT_HEADER    = 300L
         private const val ID_ABOUT_APP       = 301L
 
-        // Shared checkSetIds for radio groups
         private const val RADIO_RESIZE = 50
         private const val RADIO_STATIC = 51
     }

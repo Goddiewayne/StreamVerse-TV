@@ -44,6 +44,7 @@ import com.streamverse.app.ui.components.ChannelCard
 import com.streamverse.app.ui.components.ChannelLogo
 import com.streamverse.app.ui.components.HomeShimmer
 import com.streamverse.app.ui.components.LiveBadge
+import com.streamverse.app.ui.components.LocalLiveChannels
 import com.streamverse.app.ui.components.QualityBadge
 import com.streamverse.app.ui.components.accentColors
 import com.streamverse.app.ui.player.LocalMiniPlayerInset
@@ -60,7 +61,7 @@ import kotlin.math.roundToInt
 @Composable
 fun HomeScreen(
     onChannelClick: (String) -> Unit,
-    onScheduleClick: () -> Unit = {},
+    onGuideClick: () -> Unit = {},
     onSearchClick: () -> Unit = {},
     onSeeAllClick: (type: String, value: String) -> Unit = { _, _ -> },
     viewModel: HomeViewModel = hiltViewModel(),
@@ -170,35 +171,128 @@ fun HomeScreen(
                 }
             }
 
-            // 5. NEWS CENTRE
-            if (state.newsChannels.isNotEmpty()) {
+            // 5. EDITOR'S PICKS
+            if (state.editorialPicks.isNotEmpty()) {
+                item(key = "editors_header") {
+                    SectionHeader(title = "Editor's Picks", icon = Icons.Default.Star)
+                }
+                item(key = "editors_row") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items = state.editorialPicks, key = { it.id }) { ch ->
+                            LiveChannelCard(
+                                channel = ch,
+                                programme = state.featuredProgrammes.firstOrNull { it.channel.id == ch.id },
+                                onClick = { onChannelClick(ch.id) },
+                                modifier = Modifier.width(160.dp),
+                                isFavourite = favIds.contains(ch.id),
+                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 6. TOP NEWS
+            if (state.topNews.isNotEmpty()) {
                 item(key = "news_header") {
-                    SectionHeader(title = "News Centre", icon = Icons.Default.Newspaper)
+                    SectionHeader(title = "Top News", icon = Icons.Default.Newspaper)
                 }
                 item(key = "news_row") {
                     NewsCentreRow(
                         headlines = state.headlines,
-                        programmes = state.newsChannels,
+                        programmes = state.topNews,
                         onChannelClick = onChannelClick,
                     )
                 }
             }
 
-            // 6. SPORTS CENTRE
-            if (state.sportsChannels.isNotEmpty()) {
+            // 7. TOP SPORTS
+            if (state.topSports.isNotEmpty()) {
                 item(key = "sports_header") {
-                    SectionHeader(title = "Sports Centre", icon = Icons.Default.EmojiEvents)
+                    SectionHeader(title = "Top Sports", icon = Icons.Default.EmojiEvents)
                 }
                 item(key = "sports_row") {
                     SportsCentreRow(
                         scores = state.liveScores,
-                        programmes = state.sportsChannels,
+                        programmes = state.topSports,
                         onChannelClick = onChannelClick,
                     )
                 }
             }
 
-            // 7. TRENDING LIVE CHANNELS
+            // 8. TOP ENTERTAINMENT
+            if (state.topEntertainment.isNotEmpty()) {
+                item(key = "entertainment_header") {
+                    SectionHeader(title = "Top Entertainment", icon = Icons.Default.TheaterComedy)
+                }
+                item(key = "entertainment_row") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items = state.topEntertainment, key = { it.id }) { ch ->
+                            LiveChannelCard(
+                                channel = ch,
+                                onClick = { onChannelClick(ch.id) },
+                                modifier = Modifier.width(160.dp),
+                                isFavourite = favIds.contains(ch.id),
+                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 9. TOP MOVIES
+            if (state.topMovies.isNotEmpty()) {
+                item(key = "movies_header") {
+                    SectionHeader(title = "Top Movies", icon = Icons.Default.Movie)
+                }
+                item(key = "movies_row") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items = state.topMovies, key = { it.id }) { ch ->
+                            LiveChannelCard(
+                                channel = ch,
+                                onClick = { onChannelClick(ch.id) },
+                                modifier = Modifier.width(160.dp),
+                                isFavourite = favIds.contains(ch.id),
+                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 10. TOP DOCUMENTARIES
+            if (state.topDocumentaries.isNotEmpty()) {
+                item(key = "docs_header") {
+                    SectionHeader(title = "Top Documentaries", icon = Icons.Default.Videocam)
+                }
+                item(key = "docs_row") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items = state.topDocumentaries, key = { it.id }) { ch ->
+                            LiveChannelCard(
+                                channel = ch,
+                                onClick = { onChannelClick(ch.id) },
+                                modifier = Modifier.width(160.dp),
+                                isFavourite = favIds.contains(ch.id),
+                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 11. TRENDING LIVE CHANNELS
             if (state.trending.isNotEmpty()) {
                 item(key = "trending_header") {
                     SectionHeader(title = "Trending Live", icon = Icons.Default.Whatshot)
@@ -213,20 +307,61 @@ fun HomeScreen(
                 }
             }
 
-            // 8. MINI EPG GUIDE
-            if (state.miniGuide.isNotEmpty()) {
-                item(key = "miniguide_header") {
-                    SectionHeader(title = "TV Guide", icon = Icons.Default.CalendarMonth)
+            // 12. POPULAR IN YOUR REGION
+            if (state.popularInRegion.isNotEmpty()) {
+                item(key = "region_popular_header") {
+                    SectionHeader(title = "Popular in Your Region", icon = Icons.Default.Place)
                 }
-                item(key = "miniguide") {
-                    MiniGuide(
-                        entries = state.miniGuide,
-                        onChannelClick = onChannelClick,
-                    )
+                item(key = "region_popular_row") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items = state.popularInRegion, key = { it.id }) { ch ->
+                            LiveChannelCard(
+                                channel = ch,
+                                onClick = { onChannelClick(ch.id) },
+                                modifier = Modifier.width(160.dp),
+                                isFavourite = favIds.contains(ch.id),
+                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                            )
+                        }
+                    }
                 }
             }
 
-            // 9. KIDS
+            // 13. TV GUIDE — premium full guide with real EPG data
+            item(key = "guide_header") {
+                SectionHeader(title = "TV Guide", icon = Icons.Default.Schedule)
+            }
+            item(key = "guide_entry") {
+                TvGuideEntry(onGuideClick = onGuideClick)
+            }
+
+            // 14. POPULAR WORLDWIDE
+            if (state.popularWorldwide.isNotEmpty()) {
+                item(key = "global_header") {
+                    SectionHeader(title = "Popular Worldwide", icon = Icons.Default.Language)
+                }
+                item(key = "global_row") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items = state.popularWorldwide, key = { it.id }) { ch ->
+                            LiveChannelCard(
+                                channel = ch,
+                                onClick = { onChannelClick(ch.id) },
+                                modifier = Modifier.width(160.dp),
+                                isFavourite = favIds.contains(ch.id),
+                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 15. KIDS
             if (state.kidsChannels.isNotEmpty()) {
                 item(key = "kids_header") {
                     SectionHeader(title = "Kids", icon = Icons.Default.Face)
@@ -249,7 +384,7 @@ fun HomeScreen(
                 }
             }
 
-            // 10. MUSIC
+            // 16. MUSIC
             if (state.musicChannels.isNotEmpty()) {
                 item(key = "music_header") {
                     SectionHeader(title = "Music", icon = Icons.Default.MusicNote)
@@ -272,7 +407,7 @@ fun HomeScreen(
                 }
             }
 
-            // 11. RECENTLY ADDED
+            // 17. RECENTLY ADDED
             if (state.recentlyAdded.isNotEmpty()) {
                 item(key = "new_header") {
                     SectionHeader(title = "Recently Added", icon = Icons.Default.NewReleases)
@@ -296,7 +431,7 @@ fun HomeScreen(
                 }
             }
 
-            // 12. REGIONAL HUB
+            // 18. REGIONAL HUB
             if (state.regionalChannels.isNotEmpty()) {
                 item(key = "regional_header") {
                     SectionHeader(title = "Regional TV", icon = Icons.Default.Public)
@@ -328,7 +463,7 @@ fun HomeScreen(
                 }
             }
 
-            // 13. FAVOURITES
+            // 19. FAVOURITES
             val favChannels = state.channels.filter { favIds.contains(it.id) }
             if (favChannels.isNotEmpty()) {
                 item(key = "favourites_header") {
@@ -353,7 +488,7 @@ fun HomeScreen(
                 }
             }
 
-            // 14. RECOMMENDATIONS
+            // 20. RECOMMENDATIONS
             if (state.recommendations.isNotEmpty()) {
                 item(key = "recs_header") {
                     SectionHeader(title = "Recommended For You", icon = Icons.Default.AutoAwesome)
@@ -377,7 +512,7 @@ fun HomeScreen(
                 }
             }
 
-            // 15. CATEGORY BROWSING
+            // 21. CATEGORY BROWSING
             when (state.sortMode) {
                 SortMode.ALPHABETICAL -> {
                     for ((label, chs) in letterRows) {
@@ -448,7 +583,7 @@ fun HomeScreen(
                 }
             }
 
-            // 16. RADIO
+            // 22. RADIO
             val radioChannels = channelsByCategory[CategoryNormalizer.C.RADIO] ?: emptyList()
             if (radioChannels.isNotEmpty()) {
                 item(key = "radio_header") {
@@ -599,7 +734,8 @@ private fun HeroCard(
                         fontSize = 10.sp,
                     )
                 }
-                HeroLiveBadge()
+                val isLive = channel.id in LocalLiveChannels.current
+                if (isLive) HeroLiveBadge()
                 channel.quality?.let { QualityBadge(quality = it, modifier = Modifier) }
             }
 
@@ -780,7 +916,7 @@ private fun LiveChannelCard(
                 Modifier.align(Alignment.TopStart).padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                Box { LiveBadge() }
+                if (channel.id in LocalLiveChannels.current) Box { LiveBadge() }
                 channel.quality?.let { QualityBadge(quality = it) }
             }
 
@@ -982,13 +1118,15 @@ private fun OnNowCard(cp: ChannelProgramme, onClick: () -> Unit) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color(0xFF0A0A0A))) {
             ChannelLogo(channel = cp.channel, modifier = Modifier.matchParentSize())
 
-            Box(
-                Modifier.align(Alignment.TopStart).padding(6.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFFFF3B30))
-                    .padding(horizontal = 5.dp, vertical = 2.dp),
-            ) {
-                Text("LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 9.sp)
+            if (cp.channel.id in LocalLiveChannels.current) {
+                Box(
+                    Modifier.align(Alignment.TopStart).padding(6.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFFFF3B30))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                ) {
+                    Text("LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 9.sp)
+                }
             }
 
             cp.currentProgramme?.let { p ->
@@ -1202,83 +1340,55 @@ private fun TrendingCard(
     }
 }
 
-// ── 8. MINI EPG GUIDE ────────────────────────────────────────────────────────
+// ── 8. TV GUIDE ENTRY ────────────────────────────────────────────────────────
 
 @Composable
-private fun MiniGuide(
-    entries: Map<String, List<EpgEntry>>,
-    onChannelClick: (String) -> Unit,
-) {
-    val now = remember { System.currentTimeMillis() }
-    Column(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+private fun TvGuideEntry(onGuideClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .clickable(onClick = onGuideClick),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = NavyCard),
     ) {
-        // Header
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp, horizontal = 4.dp)) {
-            Text("Channel", Modifier.width(80.dp), color = Color.White.copy(alpha = 0.5f), fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
-            Text("Now", color = Color.White.copy(alpha = 0.5f), fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
-            Text("Next", color = Color.White.copy(alpha = 0.5f), fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
-        }
-        entries.entries.take(6).forEach { (chId, epgList) ->
-            val nowEntry = epgList.find { it.isNow }
-            val nextEntry = epgList.find { it.isNext }
-            if (nowEntry != null) {
-                MiniGuideRow(
-                    channelId = chId,
-                    nowEntry = nowEntry,
-                    nextEntry = nextEntry,
-                    onClick = { onChannelClick(chId) },
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(CyberCyan.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.Schedule,
+                    contentDescription = null,
+                    tint = CyberCyan,
+                    modifier = Modifier.size(26.dp),
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun MiniGuideRow(
-    channelId: String,
-    nowEntry: EpgEntry,
-    nextEntry: EpgEntry?,
-    onClick: () -> Unit,
-) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(NavyCard)
-            .clickable(onClick = onClick).padding(vertical = 8.dp, horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // Channel id short name
-        Box(
-            Modifier.width(74.dp),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            val label = channelId.replace("dlhd_", "").replace("iptv_", "").replace("radio_", "")
-            Text(label.take(12), color = Color.White, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-
-        // Now programme
-        Column(Modifier.weight(1f)) {
-            Text(
-                nowEntry.programme.title,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 11.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            ProgrammeProgressBar(progress = nowEntry.programme.progressFraction, accent = CyberCyan)
-        }
-        Spacer(Modifier.width(4.dp))
-        // Next programme
-        if (nextEntry != null) {
-            Text(
-                nextEntry.programme.title,
-                Modifier.width(80.dp),
-                color = Color.White.copy(alpha = 0.6f),
-                fontSize = 10.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Full TV Guide",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp,
+                )
+                Text(
+                    "Browse all channels with real-time listings",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 11.sp,
+                )
+            }
+            Icon(
+                Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.4f),
+                modifier = Modifier.size(20.dp),
             )
         }
     }

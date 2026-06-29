@@ -92,7 +92,7 @@ class FastTvClient @Inject constructor(
         // Dev-only diagnostic: a guaranteed-live reference HLS so the proxy + player pipeline
         // can be verified end-to-end when the real (frequently-rotated) feeds are offline.
         // Set to false / remove before shipping.
-        const val DEBUG_TEST_CHANNEL = true
+        const val DEBUG_TEST_CHANNEL = false
     }
 
     private fun testChannel() = FastChannel(

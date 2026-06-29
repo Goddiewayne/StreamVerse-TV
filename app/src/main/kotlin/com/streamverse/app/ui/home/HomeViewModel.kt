@@ -8,8 +8,10 @@ import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.FavoritesRepository
 import com.streamverse.core.data.repository.LoadingPhase
 import com.streamverse.core.data.repository.ProgrammeRepository
+import com.streamverse.core.data.repository.RankingContext
 import com.streamverse.core.domain.model.*
 import com.streamverse.core.util.CategoryNormalizer
+import com.streamverse.core.util.RegionProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -26,16 +28,21 @@ data class HomeUiState(
     val featured: List<Channel> = emptyList(),
     val featuredProgrammes: List<ChannelProgramme> = emptyList(),
     val onNow: List<ChannelProgramme> = emptyList(),
-    val miniGuide: Map<String, List<EpgEntry>> = emptyMap(),
     val trending: List<TrendingChannel> = emptyList(),
     val liveEvents: List<LiveEvent> = emptyList(),
     val headlines: List<NewsHeadline> = emptyList(),
     val liveScores: List<LiveScore> = emptyList(),
     val timeOfDay: TimeOfDay = TimeOfDay(DayPeriod.MORNING, "Morning", 0xFFFF8C00),
-    val newsChannels: List<ChannelProgramme> = emptyList(),
-    val sportsChannels: List<ChannelProgramme> = emptyList(),
+    val editorialPicks: List<Channel> = emptyList(),
+    val popularWorldwide: List<Channel> = emptyList(),
+    val topNews: List<ChannelProgramme> = emptyList(),
+    val topSports: List<ChannelProgramme> = emptyList(),
+    val topEntertainment: List<Channel> = emptyList(),
+    val topMovies: List<Channel> = emptyList(),
+    val topDocumentaries: List<Channel> = emptyList(),
     val kidsChannels: List<Channel> = emptyList(),
     val musicChannels: List<Channel> = emptyList(),
+    val popularInRegion: List<Channel> = emptyList(),
     val regionalChannels: Map<String, List<Channel>> = emptyMap(),
     val recommendations: List<Channel> = emptyList(),
     val recentlyAdded: List<Channel> = emptyList(),
@@ -71,13 +78,13 @@ class HomeViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            combine(repository.channels, _sortMode) { channels, mode ->
+            combine(repository.channels, _sortMode, healthEngine.liveChannelIds) { channels, mode, liveIds ->
                 val sorted = sortChannels(channels, mode)
                 val categories = buildSectionHeaders(sorted, mode)
-                val featured = if (sorted.isNotEmpty()) buildFeatured(sorted) else emptyList()
-                Triple(sorted, categories, featured)
-            }.flowOn(Dispatchers.Default).collect { (sorted, categories, featured) ->
-                rebuildUi(sorted, categories, featured)
+                val featured = if (sorted.isNotEmpty()) buildFeatured(sorted, liveIds) else emptyList()
+                Triple(sorted, categories, featured to liveIds)
+            }.flowOn(Dispatchers.Default).collect { (sorted, categories, pair) ->
+                rebuildUi(sorted, categories, pair.first, pair.second)
             }
         }
 
@@ -101,6 +108,10 @@ class HomeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            programmeRepo.loadSchedule()
+        }
+
+        viewModelScope.launch {
             while (true) {
                 delay(60_000)
                 programmeRepo.refreshTimeOfDay()
@@ -113,37 +124,56 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun rebuildUi(channels: List<Channel>, categories: List<String>, featured: List<Channel>) {
+    private suspend fun rebuildUi(channels: List<Channel>, categories: List<String>, featured: List<Channel>, liveIds: Set<String>) {
         programmeRepo.refreshAllProgrammes()
 
+        val ctx = RankingContext(
+            userRegion = RegionProvider.getRegionCode(),
+            recentlyWatchedIds = recentlyWatched.value.map { it.id }.toSet(),
+            favoriteIds = favouriteIds.value,
+        )
+        val liveOnly = { list: List<Channel> -> list.filter { it.id in liveIds } }
+        val liveChs = liveOnly(channels)
+
         val featuredProgs = featured.map { programmeRepo.getProgramme(it) }
-        val onNow = programmeRepo.getWhatsOnNow(channels)
-        val miniGuide = programmeRepo.getEpgForChannels(channels.filter { it.logoUrl != null }.take(10), 6)
+        val onNow = programmeRepo.getWhatsOnNow(channels).filter { it.channel.id in liveIds }
         programmeRepo.updateTrending(channels)
         programmeRepo.updateLiveEvents(channels)
         programmeRepo.updateHeadlines()
         programmeRepo.updateLiveScores(channels)
 
-        val newsChs = channels.filter { it.category == CategoryNormalizer.C.NEWS }
-            .map { programmeRepo.getProgramme(it) }
-        val sportsChs = channels.filter { it.category == CategoryNormalizer.C.SPORTS }
-            .map { programmeRepo.getProgramme(it) }
-        val kidsChs = channels.filter { it.category == CategoryNormalizer.C.KIDS }
-        val musicChs = channels.filter { it.category == CategoryNormalizer.C.MUSIC }
+        val editorialPicks = programmeRepo.editorialPicks(liveChs, limit = 10, ctx = ctx)
+        val popularWorldwide = programmeRepo.getGloballyPopular(liveChs, limit = 12, ctx = ctx)
+
+        val topNews = programmeRepo.topByCategory(channels, CategoryNormalizer.C.NEWS, limit = 10, ctx = ctx)
+            .let { liveOnly(it) }.map { programmeRepo.getProgramme(it) }
+        val topSports = programmeRepo.topByCategory(channels, CategoryNormalizer.C.SPORTS, limit = 10, ctx = ctx)
+            .let { liveOnly(it) }.map { programmeRepo.getProgramme(it) }
+        val topEntertainment = programmeRepo.topByCategory(channels, CategoryNormalizer.C.ENTERTAINMENT, limit = 12, ctx = ctx)
+            .let { liveOnly(it) }
+        val topMovies = programmeRepo.topByCategory(channels, CategoryNormalizer.C.MOVIES, limit = 12, ctx = ctx)
+            .let { liveOnly(it) }
+        val topDocumentaries = programmeRepo.topByCategory(channels, CategoryNormalizer.C.DOCUMENTARY, limit = 12, ctx = ctx)
+            .let { liveOnly(it) }
+        val kidsChs = programmeRepo.topByCategory(channels, CategoryNormalizer.C.KIDS, limit = 15, ctx = ctx)
+            .let { liveOnly(it) }
+        val musicChs = programmeRepo.topByCategory(channels, CategoryNormalizer.C.MUSIC, limit = 15, ctx = ctx)
+            .let { liveOnly(it) }
+        val popularInRegion = programmeRepo.popularInRegion(liveChs, limit = 12, ctx = ctx)
 
         val recs = programmeRepo.getRecommendedChannels(
-            channels, recentlyWatched.value,
+            liveChs, recentlyWatched.value,
             channels.mapNotNull { it.category }.toSet(),
             programmeRepo.timeOfDay.value.period,
         )
-        val recentAdded = channels.asReversed().take(20)
+        val recentAdded = channels.filter { it.id in liveIds }.asReversed().take(20)
 
         val catProgrammes = mutableMapOf<String, List<ChannelProgramme>>()
         for (cat in categories.filter { it != CategoryNormalizer.C.RADIO }) {
-            catProgrammes[cat] = channels.filter { it.category == cat }
-                .take(8).map { programmeRepo.getProgramme(it) }
+            catProgrammes[cat] = programmeRepo.topByCategory(channels, cat, limit = 8, ctx = ctx)
+                .let { liveOnly(it) }.map { programmeRepo.getProgramme(it) }
         }
-        val regional = programmeRepo.getRegionalChannels(channels)
+        val regional = programmeRepo.getRegionalChannels(liveChs)
 
         _uiState.value = _uiState.value.copy(
             channels = channels,
@@ -151,16 +181,21 @@ class HomeViewModel @Inject constructor(
             featured = featured,
             featuredProgrammes = featuredProgs,
             onNow = onNow,
-            miniGuide = miniGuide,
             trending = programmeRepo.trending.value,
             liveEvents = programmeRepo.liveEvents.value,
             headlines = programmeRepo.headlines.value,
             liveScores = programmeRepo.liveScores.value,
             timeOfDay = programmeRepo.timeOfDay.value,
-            newsChannels = newsChs,
-            sportsChannels = sportsChs,
+            editorialPicks = editorialPicks,
+            popularWorldwide = popularWorldwide,
+            topNews = topNews,
+            topSports = topSports,
+            topEntertainment = topEntertainment,
+            topMovies = topMovies,
+            topDocumentaries = topDocumentaries,
             kidsChannels = kidsChs,
             musicChannels = musicChs,
+            popularInRegion = popularInRegion,
             regionalChannels = regional,
             recommendations = recs,
             recentlyAdded = recentAdded,
@@ -205,8 +240,17 @@ class HomeViewModel @Inject constructor(
         )
     }
 
-    private fun buildFeatured(channels: List<Channel>): List<Channel> =
-        channels.filter { ch ->
-            ch.sources.keys.none { it == SourceType.RADIO } && ch.logoUrl != null
-        }.shuffled().take(10)
+    private fun buildFeatured(channels: List<Channel>, liveIds: Set<String>): List<Channel> {
+        val userRegion = RegionProvider.getRegionCode()
+        val eligible = channels.filter { ch ->
+            ch.sources.keys.none { it == SourceType.RADIO } && ch.logoUrl != null && ch.id in liveIds
+        }
+        val byQuality = compareByDescending<Channel> { it.quality?.ordinal ?: -1 }
+            .thenBy { it.displayName.lowercase() }
+        val regional = eligible.filter { it.country != null && it.country.equals(userRegion, ignoreCase = true) }
+            .sortedWith(byQuality)
+        val global = eligible.filter { it.country == null || !it.country.equals(userRegion, ignoreCase = true) }
+            .sortedWith(byQuality)
+        return (regional + global).take(10)
+    }
 }

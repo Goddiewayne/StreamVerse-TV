@@ -20,6 +20,7 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
 import com.streamverse.core.data.sourceProviderCount
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.numberedDisplayName
 import com.streamverse.core.domain.model.Quality
 import com.streamverse.core.util.ChannelLogoResolver
 
@@ -106,7 +107,7 @@ class TVChannelPresenter(
         val h = vh as CardHolder
         val ch = item as? Channel ?: return
 
-        h.name.text = ch.displayName
+        h.name.text = ch.numberedDisplayName()
 
         val grad = AVATAR_GRADIENTS[Math.abs(ch.displayName.hashCode()) % AVATAR_GRADIENTS.size]
         h.backdrop.background = GradientDrawable(
@@ -182,8 +183,8 @@ class TVChannelPresenter(
                 .diskCacheStrategy(DiskCacheStrategy.ALL)
                 .into(h.blur)
         } else {
-            Glide.with(h.logo.context).clear(h.logo)
-            Glide.with(h.blur.context).clear(h.blur)
+            runCatching { Glide.with(h.logo.context).clear(h.logo) }
+            runCatching { Glide.with(h.blur.context).clear(h.blur) }
             h.blur.visibility = View.GONE
             h.logo.setImageDrawable(letterDrawable(h.logo.context, ch.displayName))
         }
@@ -191,8 +192,8 @@ class TVChannelPresenter(
 
     override fun onUnbindViewHolder(vh: ViewHolder) {
         val h = vh as CardHolder
-        Glide.with(h.logo.context).clear(h.logo)
-        Glide.with(h.blur.context).clear(h.blur)
+        runCatching { Glide.with(h.logo.context).clear(h.logo) }
+        runCatching { Glide.with(h.blur.context).clear(h.blur) }
         h.logo.setImageDrawable(null)
         h.blur.setImageDrawable(null)
     }

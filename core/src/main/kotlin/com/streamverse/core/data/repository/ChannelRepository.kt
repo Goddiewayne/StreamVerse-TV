@@ -3,30 +3,42 @@ package com.streamverse.core.data.repository
 import android.content.Context
 import android.util.Log
 import com.streamverse.core.data.ChannelCacheManager
+import com.streamverse.core.data.SmartCacheManager
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.data.SourceProvider
+import com.streamverse.core.data.source.provider.ProviderRegistry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.streamverse.core.data.model.RadioStation
 import com.streamverse.core.data.remote.dlhd.DlhdClient
 import com.streamverse.core.data.remote.fast.FastChannel
 import com.streamverse.core.data.remote.fast.FastTvClient
+import com.streamverse.core.data.remote.free.FreeChannel
+import com.streamverse.core.data.remote.free.FreeLiveClient
 import com.streamverse.core.data.remote.independent.IndependentClient
 import com.streamverse.core.data.remote.iptv.FreeTvClient
 import com.streamverse.core.data.remote.iptv.IptvChannel
 import com.streamverse.core.data.remote.iptv.IptvClient
 import com.streamverse.core.data.remote.premium.PremiumChannel
 import com.streamverse.core.data.remote.premium.PremiumClient
+import com.streamverse.core.data.remote.broadcaster.BroadcasterClient
 
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
+import com.streamverse.core.data.source.ChannelMatchingEngine
+import com.streamverse.core.data.source.IncrementalMergeState
+import com.streamverse.core.data.source.LogicalChannelMatcher
+import com.streamverse.core.data.source.MetadataAggregator
+import com.streamverse.core.data.source.SourceItem
+import com.streamverse.core.data.source.SourceRegistry
+import com.streamverse.core.data.source.SourceRegistryInitializer
 import com.streamverse.core.domain.model.Channel
+
 import com.streamverse.core.domain.model.Quality
-import com.streamverse.core.domain.model.ScheduleDay
-import com.streamverse.core.domain.model.ScheduleEvent
 import com.streamverse.core.domain.model.SourceInfo
 import com.streamverse.core.domain.model.SourceType
 import com.streamverse.core.util.CategoryNormalizer
 import com.streamverse.core.util.ChannelNameFormatter
+import com.streamverse.core.util.PerformanceMonitor
 import com.streamverse.core.util.StreamVerseDispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +57,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -60,17 +73,36 @@ class ChannelRepository @Inject constructor(
     private val fastTvClient: FastTvClient,
     private val premiumClient: PremiumClient,
     private val independentClient: IndependentClient,
+    private val broadcasterClient: BroadcasterClient,
+    private val freeLiveClient: FreeLiveClient,
     private val cacheManager: ChannelCacheManager,
+    private val smartCacheManager: SmartCacheManager,
     private val sourcePreferences: SourcePreferences,
     private val dispatchers: StreamVerseDispatchers,
+    private val sourceRegistry: SourceRegistry,
+    private val channelMatcher: LogicalChannelMatcher,
+    private val metadataAggregator: MetadataAggregator,
+    @Suppress("unused") private val registryInitializer: SourceRegistryInitializer,
+    private val providerRegistry: ProviderRegistry,
     @ApplicationContext private val appContext: Context,
 ) {
+    private val matchingEngine = ChannelMatchingEngine(channelMatcher)
+    private val incrementalMergeState = IncrementalMergeState(matchingEngine, metadataAggregator)
+    private val loadInProgress = AtomicBoolean(false)
+
     companion object {
         private const val DEAD_CHANNELS_PREFS = "dead_channels"
         private const val DEAD_CHANNELS_MAX_AGE = 7 * 24 * 60 * 60 * 1000L
         private const val PLACEHOLDER_LOGO_THRESHOLD = 5
 
         // Patterns that identify X-rated/adult channels by display name.
+        /** Instant-loading providers (no network — hardcoded or asset-based). */
+        val TIER_0 = setOf(SourceProvider.VERIFIED, SourceProvider.BROADCASTER)
+        /** Fast network providers (M3U-based, typically <5s). */
+        val TIER_1 = setOf(SourceProvider.IPTV, SourceProvider.FREE_TV, SourceProvider.RADIO, SourceProvider.FAST_TV)
+        /** Slow/unreliable network providers (scraping, large payloads, up to 55s). */
+        val TIER_2 = setOf(SourceProvider.DLHD, SourceProvider.STMIFY, SourceProvider.PREMIUM, SourceProvider.FREE_CHANNEL)
+
         private val ADULT_NAME_PATTERNS = listOf(
             Regex("""\b18\+\s*\(""", RegexOption.IGNORE_CASE),         // "18+(Player-1)"
             Regex("""\b18\+\s*(?:onlyfans|porn|sex|adult|erotic|nude)""", RegexOption.IGNORE_CASE),
@@ -94,7 +126,7 @@ class ChannelRepository @Inject constructor(
         return ADULT_NAME_PATTERNS.any { it.containsMatchIn(name) }
     }
 
-    private val deadChannelSeed = setOf("Channels TV", "Soundcity TV", "Channels 24")
+    private val deadChannelSeed = setOf<String>()
 
     /** Channel display names whose streams are confirmed dead (403/geo-blocked). */
     @Volatile private var deadChannelNames: Set<String> = loadDeadChannelNames()
@@ -220,7 +252,7 @@ class ChannelRepository @Inject constructor(
     // ── Progressive loading state ──────────────────────────────────────────────
     // Maximum concurrent source fetches (semaphore‑controlled).  Higher values load faster
     // but may saturate the device's network / memory.
-    private val maxConcurrentLoads = 4
+    private val maxConcurrentLoads = 6
     private val loadSemaphore = Semaphore(maxConcurrentLoads)
 
     // Per‑source fetch timeout so a single hanging provider never blocks the whole load.
@@ -237,11 +269,15 @@ class ChannelRepository @Inject constructor(
     private var fastTvResults: List<FastChannel> = emptyList()
     private var premiumResults: List<PremiumChannel> = emptyList()
     private var independentResults: List<IptvChannel> = emptyList()
+    private var broadcasterResults: List<IptvChannel> = emptyList()
+    private var freeLiveResults: List<FreeChannel> = emptyList()
 
     /** Runs a source fetch under a hard timeout; returns empty on timeout/error so the merge
      *  proceeds with whatever else loaded instead of hanging forever. */
     private suspend fun <T> fetchWithin(ms: Long, block: suspend () -> List<T>): List<T> =
         withTimeoutOrNull(ms) { runCatching { block() }.getOrDefault(emptyList()) } ?: emptyList()
+
+    @Volatile private var lastEmitMs = 0L
 
     // Most recent search results (incl. synthesized Stmify channels) so the player can
     // resolve them by id when tapped.
@@ -254,32 +290,24 @@ class ChannelRepository @Inject constructor(
      * Lightweight search index that pre-computes lowercased names and a word-level token map
      * so every [searchChannels] call avoids O(n * m) string operations on 15k+ items.
      */
-    private class SearchIndex(private val channels: List<Channel>) {
-        private val lowerNames: List<String>
-        private val wordIndex: Map<String, Set<Int>>
-        private val trigramIndex: Map<String, Set<Int>>
-        val idIndex: Map<String, Channel>
-
-        init {
-            lowerNames = channels.map { it.displayName.lowercase() }
-            idIndex = channels.associateBy { it.id }
-            val wordMap = mutableMapOf<String, MutableSet<Int>>()
-            val triMap = mutableMapOf<String, MutableSet<Int>>()
+    private class SearchIndex(
+        private val channels: List<Channel>,
+        private val lowerNames: List<String> = channels.map { it.displayName.lowercase() },
+        val idIndex: Map<String, Channel> = channels.associateBy { it.id },
+        // Word index for O(1) multi-token intersection — memory-efficient.
+        private val wordIndex: Map<String, Set<Int>> = run {
+            val wm = mutableMapOf<String, MutableSet<Int>>()
             for ((idx, ch) in channels.withIndex()) {
-                val name = ch.displayName.lowercase()
-                for (token in name.split(" ", "-", "/", ".", "&", "'")) {
-                    if (token.length >= 2) wordMap.getOrPut(token) { mutableSetOf() }.add(idx)
-                }
-                // Trigram index for fast substring search (no full scan for 15k+ channels).
-                for (i in 0..name.length - 3) {
-                    triMap.getOrPut(name.substring(i, i + 3)) { mutableSetOf() }.add(idx)
+                for (token in ch.displayName.lowercase().split(tokenSplit)) {
+                    if (token.length >= 2) wm.getOrPut(token) { mutableSetOf() }.add(idx)
                 }
             }
-            wordIndex = wordMap
-            trigramIndex = triMap
+            wm
+        },
+    ) {
+        companion object {
+            private val tokenSplit = Regex("""[\s\-/\.&']+""")
         }
-
-        private val tokenSplit = charArrayOf(' ', '-', '/', '.', '&', '\'')
 
         /**
          * Free-text search matches the channel **name only** (never the category — searching
@@ -294,7 +322,7 @@ class ChannelRepository @Inject constructor(
                 return if (category != null) channels.filter { it.category == category } else emptyList()
             }
 
-            val queryTokens = q.split(*tokenSplit).filter { it.length >= 2 }
+            val queryTokens = q.split(tokenSplit).filter { it.length >= 2 }
 
             // Gather name-match candidates: word-index intersection (all tokens present) ∪ substring.
             val candidates = LinkedHashSet<Int>()
@@ -303,20 +331,15 @@ class ChannelRepository @Inject constructor(
                     .reduceOrNull { a, b -> a.intersect(b) }
                     ?.let { candidates.addAll(it) }
             }
-            // Substring candidates via trigram index (O(1) vs O(n) full scan).
-            if (q.length >= 3) {
-                val triSeed = trigramIndex[q.substring(0, 3)] ?: emptySet()
-                for (i in triSeed) { if (lowerNames[i].contains(q)) candidates.add(i) }
-            } else {
-                for (i in channels.indices) { if (lowerNames[i].contains(q)) candidates.add(i) }
-            }
+            // Substring via linear scan (no trigram index — saves ~100MB peak heap on phone).
+            for (i in channels.indices) { if (lowerNames[i].contains(q)) candidates.add(i) }
 
             fun relevance(name: String): Int = when {
                 name == q -> 0
                 name.startsWith(q) -> 1
-                name.split(*tokenSplit).any { it.startsWith(q) } -> 2
+                name.split(tokenSplit).any { it.startsWith(q) } -> 2
                 name.contains(q) -> 3
-                else -> 4 // matched only via all-tokens-present (e.g. "sky news" → "Sky Sports News")
+                else -> 4
             }
 
             return candidates.asSequence()
@@ -335,16 +358,7 @@ class ChannelRepository @Inject constructor(
 
     @Volatile private var searchIndex: SearchIndex? = null
 
-    private fun providerOf(type: SourceType): SourceProvider = when (type) {
-        SourceType.DLHD -> SourceProvider.DLHD
-        SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM -> SourceProvider.STMIFY
-        SourceType.IPTV -> SourceProvider.IPTV
-        SourceType.FREE_TV -> SourceProvider.FREE_TV
-        SourceType.FAST_TV -> SourceProvider.FAST_TV
-        SourceType.RADIO -> SourceProvider.RADIO
-        SourceType.INDEPENDENT -> SourceProvider.INDEPENDENT
-        SourceType.PREMIUM -> SourceProvider.PREMIUM
-    }
+    private fun providerOf(type: SourceType): SourceProvider = SourceProvider.forType(type)
 
     /** A channel is shown only if at least one of its sources is from an enabled provider. */
     private fun hasEnabledSource(channel: Channel, enabled: Map<SourceProvider, Boolean>): Boolean =
@@ -371,136 +385,243 @@ class ChannelRepository @Inject constructor(
      * and see the catalogue grow with each source completion.
      */
     suspend fun load() = withContext(dispatchers.io) {
+        if (!loadInProgress.compareAndSet(false, true)) {
+            Log.d("ChannelLoad", "load already in progress — skipping duplicate call")
+            return@withContext
+        }
+        try {
         resetSourceResults()
         _loadingPhase.value = LoadingPhase.LOADING
         _isLoading.value = true
-        val t0 = System.currentTimeMillis()
+        val pm = PerformanceMonitor("ChannelLoad").also { it.start() }
 
-        // ── Step 1: on‑disk cache (zero‑network first frame) ──────────────
+        // ── Phase 1a: cache I/O — emit to UI instantly, then index in background ──
+        pm.phaseStarted("cache_io")
         val cached = cacheManager.load()
         if (cached != null && cached.isNotEmpty()) {
             _loadingPhase.value = LoadingPhase.CACHE
             _channels.value = cached
             _searchable.value = cached
-            searchIndex = SearchIndex(cached)
-            _idIndex = buildIdIndex(cached)
-            _isLoading.value = false   // content is visible now
-            Log.d("ChannelRepo", "cache hit: ${cached.size} channels")
+            _isLoading.value = false
+            Log.d("ChannelLoad", "cache: ${cached.size} channels")
         }
+        pm.phaseEnded("cache_io")
+        // ── Phase 1b: cache indexing — build incremental state + search indexes ──
+        pm.phaseStarted("cache_idx")
+        if (cached != null && cached.isNotEmpty()) {
+            incrementalMergeState.initializeFromChannels(cached)
+            searchIndex = SearchIndex(incrementalMergeState.channels)
+            _idIndex = buildIdIndex(incrementalMergeState.channels)
+        }
+        pm.phaseEnded("cache_idx")
 
         // ── Step 2: discover enabled sources ──────────────────────────────
-        val enabled = sourcePreferences.enabled()
-        // ═══ Source definitions ═══
-        // Each entry holds the provider, a timeout, and a suspend lambda that fetches
-        // the raw source data and stores it in the corresponding accumulator field.
-        // Providers with zero channels simply skip the merge step.
-
         data class SourceDef(
             val provider: SourceProvider,
             val timeoutMs: Long,
-            val load: suspend () -> Boolean, // true = had data to merge
+            val load: suspend () -> Boolean,
         )
 
         fun buildDefs(): List<SourceDef> {
+            val enabled = sourcePreferences.enabled()
             val defs = mutableListOf<SourceDef>()
-
             if (enabled[SourceProvider.DLHD] != false) defs.add(SourceDef(SourceProvider.DLHD, 45_000L) {
-                val raw = fetchWithin(sourceFetchTimeoutMs) { dlhdClient.fetchChannelsFromScrape().getOrDefault(emptyList()) }
-                dlhdResults = raw; raw.isNotEmpty()
+                dlhdResults = fetchWithin(sourceFetchTimeoutMs) { dlhdClient.fetchChannelsFromScrape().getOrDefault(emptyList()) }; dlhdResults.isNotEmpty()
             })
             if (enabled[SourceProvider.STMIFY] != false) defs.add(SourceDef(SourceProvider.STMIFY, 45_000L) {
                 val a = fetchWithin(sourceFetchTimeoutMs) { stmifyClient.fetchChannels().getOrDefault(emptyList()) }
                 val b = fetchWithin(sourceFetchTimeoutMs) { stmifyClient.fetchChannelsFromArchive().getOrDefault(emptyList()) }
-                val merged = (a + b).distinctBy { it.id }
-                stmifyResults = merged; merged.isNotEmpty()
+                stmifyResults = (a + b).distinctBy { it.id }; stmifyResults.isNotEmpty()
             })
             if (enabled[SourceProvider.IPTV] != false) defs.add(SourceDef(SourceProvider.IPTV, 55_000L) {
-                val raw = fetchWithin(sourceFetchTimeoutMs) { iptvClient.fetchChannels().getOrDefault(emptyList()) }
-                iptvResults = raw.filterNot { it.name.trim() in deadChannelNames }; iptvResults.isNotEmpty()
+                iptvResults = fetchWithin(sourceFetchTimeoutMs) { iptvClient.fetchChannels().getOrDefault(emptyList()) }
+                    .filterNot { it.name.trim() in deadChannelNames }; iptvResults.isNotEmpty()
             })
             if (enabled[SourceProvider.FREE_TV] != false) defs.add(SourceDef(SourceProvider.FREE_TV, 55_000L) {
-                val raw = fetchWithin(sourceFetchTimeoutMs) { freeTvClient.fetchChannels().getOrDefault(emptyList()) }
-                freeTvResults = raw.filterNot { it.name.trim() in deadChannelNames }; freeTvResults.isNotEmpty()
+                freeTvResults = fetchWithin(sourceFetchTimeoutMs) { freeTvClient.fetchChannels().getOrDefault(emptyList()) }
+                    .filterNot { it.name.trim() in deadChannelNames }; freeTvResults.isNotEmpty()
             })
             if (enabled[SourceProvider.RADIO] != false) defs.add(SourceDef(SourceProvider.RADIO, 55_000L) {
-                val raw = fetchWithin(sourceFetchTimeoutMs) { radioBrowserClient.fetchStations().getOrDefault(emptyList()) }
-                radioResults = raw; raw.isNotEmpty()
+                radioResults = fetchWithin(sourceFetchTimeoutMs) { radioBrowserClient.fetchStations().getOrDefault(emptyList()) }; radioResults.isNotEmpty()
             })
             if (enabled[SourceProvider.FAST_TV] != false) defs.add(SourceDef(SourceProvider.FAST_TV, 55_000L) {
-                val raw = fetchWithin(sourceFetchTimeoutMs) { fastTvClient.fetchChannels().getOrDefault(emptyList()) }
-                fastTvResults = raw.filterNot { it.name.trim() in deadChannelNames }; fastTvResults.isNotEmpty()
+                fastTvResults = fetchWithin(sourceFetchTimeoutMs) { fastTvClient.fetchChannels().getOrDefault(emptyList()) }
+                    .filterNot { it.name.trim() in deadChannelNames }; fastTvResults.isNotEmpty()
             })
             if (enabled[SourceProvider.PREMIUM] != false) defs.add(SourceDef(SourceProvider.PREMIUM, 55_000L) {
-                val raw = fetchWithin(sourceFetchTimeoutMs) { premiumClient.fetchChannels().getOrDefault(emptyList()) }
-                premiumResults = raw; raw.isNotEmpty()
+                premiumResults = fetchWithin(sourceFetchTimeoutMs) { premiumClient.fetchChannels().getOrDefault(emptyList()) }.take(10000); premiumResults.isNotEmpty()
             })
             if (enabled[SourceProvider.INDEPENDENT] != false) defs.add(SourceDef(SourceProvider.INDEPENDENT, 55_000L) {
-                val raw = fetchWithin(sourceFetchTimeoutMs) { independentClient.fetchChannels() }
-                independentResults = raw; raw.isNotEmpty()
+                independentResults = fetchWithin(sourceFetchTimeoutMs) { independentClient.fetchChannels() }; independentResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.BROADCASTER] != false) defs.add(SourceDef(SourceProvider.BROADCASTER, 55_000L) {
+                broadcasterResults = broadcasterClient.fetchChannels(); broadcasterResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.FREE_CHANNEL] != false) defs.add(SourceDef(SourceProvider.FREE_CHANNEL, 55_000L) {
+                freeLiveResults = fetchWithin(sourceFetchTimeoutMs) { freeLiveClient.fetchChannels().getOrDefault(emptyList()) }
+                    .filterNot { it.name.trim() in deadChannelNames }; freeLiveResults.isNotEmpty()
             })
             return defs
         }
 
-        // ── Step 3: launch all sources concurrently — each emits on completion ──
         val defs = buildDefs()
         if (defs.isEmpty()) {
             _loadingPhase.value = LoadingPhase.DONE
             _isLoading.value = false
-            Log.d("ChannelLoad", "no sources enabled — done in ${System.currentTimeMillis() - t0}ms")
             return@withContext
         }
 
+        // ── Step 3: launch sources in priority tiers ────────────────────
+        // Tier 0 (instant / no-network) runs first; Tier 1 and 2 run in
+        // parallel with progressive emission after each source completion.
         val totalSources = defs.size
         var completedSources = 0
 
-        coroutineScope {
-            for (def in defs) {
-                async {
-                    loadSemaphore.acquire()
-                    try {
-                        val t1 = System.currentTimeMillis()
-                        val hadData = def.load()
-                        val elapsed = System.currentTimeMillis() - t1
-                        Log.d("ChannelLoad", "${def.provider} ${if (hadData) "loaded" else "empty"} in ${elapsed}ms")
-
-                        // Merge ALL accumulated data and emit so the UI grows progressively.
-                        mergeAndEmit()
-
-                        synchronized(this@ChannelRepository) {
-                            completedSources++
-                            Log.d("ChannelLoad", "progress: $completedSources/$totalSources sources (${_channels.value.size} channels)")
-                        }
-                    } catch (e: Exception) {
-                        Log.w("ChannelLoad", "${def.provider} failed: ${e.message}")
-                        synchronized(this@ChannelRepository) { completedSources++ }
-                    } finally {
-                        loadSemaphore.release()
-                    }
+        suspend fun processDef(def: SourceDef) {
+            loadSemaphore.acquire()
+            try {
+                val t1 = System.currentTimeMillis()
+                val hadData = def.load()
+                Log.d("ChannelLoad", "${def.provider} ${if (hadData) "loaded" else "empty"} in ${System.currentTimeMillis() - t1}ms")
+                if (hadData) {
+                    mergeSourceIntoState(def.provider)
+                    clearAccumulator(def.provider)
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitMs > 400L) { lastEmitMs = now; emitMergedState(rebuildIndex = false) }
                 }
+            } catch (e: Exception) {
+                Log.w("ChannelLoad", "${def.provider} failed: ${e.message}")
+            } finally {
+                loadSemaphore.release()
+                synchronized(this@ChannelRepository) { completedSources++ }
             }
         }
-        // All sources have completed — finish loading.
-        val totalTime = System.currentTimeMillis() - t0
-        Log.d("ChannelLoad", "TOTAL ${totalTime}ms — ${_channels.value.size} channels from ${totalSources} sources")
 
-        // Finalise the index and persist cache.
-        mergeAndEmit()
-        cacheManager.save(_channels.value)
-        cacheManager.saveSearchable(_searchable.value)
+        // Tier 0: instant sources (no network) — run first for fast first content
+        pm.phaseStarted("tier0")
+        for (def in defs.filter { SourceProvider.canonicalOf(it.provider) in TIER_0 }) processDef(def)
+        pm.phaseEnded("tier0", "${incrementalMergeState.channels.size} channels")
 
-        // Side‑effect source auto‑healing (never delays startup).
-        runCatching { premiumClient.runMaintenance() }
+        // Tier 1 + 2: concurrent with semaphore
+        val tier12 = defs.filter { SourceProvider.canonicalOf(it.provider) !in TIER_0 }
+        pm.phaseStarted("tier12")
+        coroutineScope {
+            for (def in tier12) {
+                async { processDef(def) }
+            }
+        }
+        pm.phaseEnded("tier12", "${incrementalMergeState.channels.size} channels")
+
+        // ── Step 4: finalize ────────────────────────────────────────────
+        pm.phaseStarted("finalize")
+        val snapshot = incrementalMergeState.channels
+        val added = incrementalMergeState.addedCount
+        val updated = incrementalMergeState.updatedCount
+        incrementalMergeState.release()
+        val sorted = snapshot.sortedBy { sourceRank(it) }
+        _channels.value = sorted
+        _searchable.value = sorted
+        // Only rebuild search index if channels actually changed — avoids OOM on phone
+        // with 52k channels when cache is already authoritative.
+        if (added > 0 || updated > 0) {
+            searchIndex = SearchIndex(sorted)
+            _idIndex = buildIdIndex(sorted)
+        }
+        resetSourceResults()
+        System.gc()
+
+        // Progressive cache save — persist merged results even if mid-load kill
+        coroutineScope {
+            async { cacheManager.save(sorted) }
+            async { cacheManager.saveSearchable(sorted) }
+            async { runCatching { premiumClient.runMaintenance() } }
+            async { runCatching { smartCacheManager.runEvictionIfNeeded() } }
+        }
+        pm.phaseEnded("finalize")
 
         _loadingPhase.value = LoadingPhase.DONE
         _isLoading.value = false
+        Log.d("ChannelLoad", "TOTAL ${pm.elapsed("finalize")}ms — ${sorted.size} channels from ${totalSources} sources")
+        pm.logSummary()
+        } finally { loadInProgress.set(false) }
+    }
+
+    /** Merge one source type's accumulated results into the incremental state. */
+    private suspend fun mergeSourceIntoState(provider: SourceProvider) {
+        when (SourceProvider.canonicalOf(provider)) {
+            SourceProvider.SPORTS_EVENTS -> incrementalMergeState.mergeSources(
+                dlhdResults.map { SourceItem(it.id, it.name, null, it.logoUrl, it.category, null, null, null) },
+                SourceType.SPORTS_EVENTS,
+            )
+            SourceProvider.WORLD_TV -> incrementalMergeState.mergeSources(
+                stmifyResults.map { SourceItem(it.id, it.name, null, it.logoUrl, null, null, null, it.quality?.name) },
+                SourceType.WORLD_TV,
+            )
+            SourceProvider.IPTV -> incrementalMergeState.mergeSources(
+                iptvResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, it.language, it.quality, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
+                SourceType.IPTV,
+            )
+            SourceProvider.FREE_TV -> incrementalMergeState.mergeSources(
+                freeTvResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, it.language, it.quality, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
+                SourceType.FREE_TV,
+            )
+            SourceProvider.RADIO -> incrementalMergeState.mergeRadio(radioResults)
+            SourceProvider.FAST_TV -> incrementalMergeState.mergeSources(
+                fastTvResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, null, null, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
+                SourceType.FAST_TV,
+            )
+            SourceProvider.PREMIUM -> incrementalMergeState.mergeSources(
+                premiumResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, null, null, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
+                SourceType.PREMIUM,
+            )
+            SourceProvider.VERIFIED -> incrementalMergeState.mergeSources(
+                independentResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, it.language, it.quality, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
+                SourceType.VERIFIED,
+            )
+            SourceProvider.BROADCASTER -> incrementalMergeState.mergeSources(
+                broadcasterResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, it.language, it.quality, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
+                SourceType.BROADCASTER,
+            )
+            SourceProvider.FREE_CHANNEL -> incrementalMergeState.mergeSources(
+                freeLiveResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, null, null, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
+                SourceType.FREE_CHANNEL,
+            )
+            // canonicalOf guarantees only canonical values reach here; keep compiler happy
+            SourceProvider.DLHD, SourceProvider.STMIFY, SourceProvider.INDEPENDENT -> {}
+        }
+    }
+
+    /** Emit the current merged state to the UI channels Flow. */
+    private fun emitMergedState(rebuildIndex: Boolean = true) {
+        val sorted = incrementalMergeState.channels.sortedBy { sourceRank(it) }
+        _channels.value = sorted
+        _searchable.value = sorted
+        if (rebuildIndex) {
+            searchIndex = SearchIndex(sorted)
+            _idIndex = buildIdIndex(sorted)
+        }
+    }
+
+    private val sourceRankMap: Map<SourceType, Int> by lazy {
+        providerRegistry.prioritySorted().withIndex().associate { (i, st) -> st to i }
+    }
+
+    /** Best (highest) priority of this channel's sources — lower = earlier in list. */
+    private fun sourceRank(ch: Channel): Int {
+        var best = Int.MAX_VALUE
+        for (st in ch.sources.keys) {
+            val idx = sourceRankMap[SourceType.canonicalOf(st)] ?: continue
+            if (idx < best) best = idx
+        }
+        return best
     }
 
     /**
      * Re‑run the full merge pipeline with the current accumulated raw results and emit
      * the updated catalogue to [channels] / [_channels].
      */
-    private suspend fun mergeAndEmit() {
-        val merged = enrichAndMerge(
+    private suspend fun mergeAndEmit(rebuildIndex: Boolean = true) {
+        val raw = enrichAndMerge(
             mergeQuick(dlhdResults, stmifyResults),
             iptvResults,
             freeTvResults,
@@ -508,11 +629,15 @@ class ChannelRepository @Inject constructor(
             fastTvResults,
             premiumResults,
             independentResults,
-        )
-        _channels.value = merged
-        _searchable.value = merged
-        searchIndex = SearchIndex(merged)
-        _idIndex = buildIdIndex(merged)
+            broadcasterResults,
+            freeLiveResults,
+        ).sortedBy { sourceRank(it) }
+        _channels.value = raw
+        _searchable.value = raw
+        if (rebuildIndex) {
+            searchIndex = SearchIndex(raw)
+            _idIndex = buildIdIndex(raw)
+        }
     }
 
     /** Clear all accumulated raw source results — called before a fresh load. */
@@ -525,6 +650,25 @@ class ChannelRepository @Inject constructor(
         fastTvResults = emptyList()
         premiumResults = emptyList()
         independentResults = emptyList()
+        broadcasterResults = emptyList()
+        freeLiveResults = emptyList()
+    }
+
+    /** Free one source's raw data immediately after merging to reduce peak memory. */
+    private fun clearAccumulator(provider: SourceProvider) {
+        when (SourceProvider.canonicalOf(provider)) {
+            SourceProvider.SPORTS_EVENTS -> dlhdResults = emptyList()
+            SourceProvider.WORLD_TV -> stmifyResults = emptyList()
+            SourceProvider.IPTV -> iptvResults = emptyList()
+            SourceProvider.FREE_TV -> freeTvResults = emptyList()
+            SourceProvider.RADIO -> radioResults = emptyList()
+            SourceProvider.FAST_TV -> fastTvResults = emptyList()
+            SourceProvider.PREMIUM -> premiumResults = emptyList()
+            SourceProvider.VERIFIED -> independentResults = emptyList()
+            SourceProvider.BROADCASTER -> broadcasterResults = emptyList()
+            SourceProvider.FREE_CHANNEL -> freeLiveResults = emptyList()
+            else -> {}
+        }
     }
 
     /**
@@ -581,8 +725,8 @@ class ChannelRepository @Inject constructor(
                 ch.sources.values.any { it.referenceId == stm.id }
             }
             existing?.copy(
-                sources = existing.sources + (SourceType.STMIFY_FREE to SourceInfo(
-                    type = SourceType.STMIFY_FREE,
+                sources = existing.sources + (SourceType.WORLD_TV to SourceInfo(
+                    type = SourceType.WORLD_TV,
                     referenceId = stm.id,
                 ))
             ) ?: Channel(
@@ -594,7 +738,7 @@ class ChannelRepository @Inject constructor(
                 language = null,
                 country = null,
                 description = stm.description,
-                sources = mapOf(SourceType.STMIFY_FREE to SourceInfo(type = SourceType.STMIFY_FREE, referenceId = stm.id)),
+                sources = mapOf(SourceType.WORLD_TV to SourceInfo(type = SourceType.WORLD_TV, referenceId = stm.id)),
             )
         }
         val enabled = sourcePreferences.enabled()
@@ -654,20 +798,6 @@ class ChannelRepository @Inject constructor(
     suspend fun getCategories(): List<String> =
         _channels.value.mapNotNull { it.category }.distinct().sorted()
 
-    suspend fun fetchSchedule(apiKey: String?): List<ScheduleDay> = withContext(dispatchers.io) {
-        if (apiKey == null) return@withContext emptyList()
-        dlhdClient.fetchSchedule(apiKey).getOrDefault(emptyList())
-            .groupBy { it.date }
-            .map { (date, dayEvents) ->
-                ScheduleDay(
-                    date = date,
-                    events = dayEvents.groupBy { it.category }.mapValues { (_, evts) ->
-                        evts.map { ScheduleEvent(it.time, it.event, it.category, it.channelIds, date) }
-                    }
-                )
-            }.sortedBy { it.date }
-    }
-
     // ── Merge helpers ────────────────────────────────────────────────────────
 
     private fun mergeQuick(
@@ -677,8 +807,8 @@ class ChannelRepository @Inject constructor(
         val merged = mutableMapOf<String, Channel>()
         for (dl in dlhd) {
             val stm = findMatchingStmify(dl.name, stmify)
-            val sources = mutableMapOf(SourceType.DLHD to SourceInfo(type = SourceType.DLHD, referenceId = dl.id))
-            if (stm != null) sources[SourceType.STMIFY_FREE] = SourceInfo(type = SourceType.STMIFY_FREE, referenceId = stm.id)
+            val sources = mutableMapOf(SourceType.SPORTS_EVENTS to SourceInfo(type = SourceType.SPORTS_EVENTS, referenceId = dl.id))
+            if (stm != null) sources[SourceType.WORLD_TV] = SourceInfo(type = SourceType.WORLD_TV, referenceId = stm.id)
             val rawCat = stm?.genres?.firstOrNull() ?: dl.category
             val formattedName = ChannelNameFormatter.format(dl.name)
             // When no raw category exists, infer from the channel name itself
@@ -713,7 +843,7 @@ class ChannelRepository @Inject constructor(
                 language = null,
                 country = null,
                 description = st.description,
-                sources = mapOf(SourceType.STMIFY_FREE to SourceInfo(type = SourceType.STMIFY_FREE, referenceId = st.id)),
+                sources = mapOf(SourceType.WORLD_TV to SourceInfo(type = SourceType.WORLD_TV, referenceId = st.id)),
             )
         }
         return merged.values.toList()
@@ -727,6 +857,8 @@ class ChannelRepository @Inject constructor(
         fastTv: List<FastChannel> = emptyList(),
         premium: List<PremiumChannel> = emptyList(),
         independent: List<IptvChannel> = emptyList(),
+        broadcaster: List<IptvChannel> = emptyList(),
+        freeLive: List<FreeChannel> = emptyList(),
     ): List<Channel> {
         // Collapse channels already in the base list that share a canonical name — e.g. "MBC 2" and
         // "MBC 2 Ⓢ" arriving from two premium sources (DLHD + Stmify) that the quick matcher missed.
@@ -755,11 +887,13 @@ class ChannelRepository @Inject constructor(
         val byNameLower = mutableMapOf<String, Channel>()
         val byCanonicalName = mutableMapOf<String, Channel>()
         val byWordIndex = mutableMapOf<String, MutableSet<String>>()
+        val byTvgId = mutableMapOf<String, Channel>()
         existingDeduped.forEach { ch ->
             val norm = ch.displayName.lowercase().trim()
             byNameLower[norm] = ch
             val canon = canonicalName(ch.displayName)
             byCanonicalName[canon] = ch
+            ch.tvgId?.let { byTvgId[it.lowercase().trim()] = ch }
             words(ch.displayName).forEach { w ->
                 byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
             }
@@ -776,7 +910,9 @@ class ChannelRepository @Inject constructor(
             val norm = ip.name.lowercase().trim()
             val canon = canonicalName(ip.name)
             // O(1) lookups: exact normalized name → canonical name → no fuzzy fallback needed for most
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon] ?: findByNameFuzzyFast(ip.name, byCanonicalName, byWordIndex, byId)
+            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
+                ?: matchingEngine.findBestMatch(ip.name, null, ip.country, ip.language, emptyList(),
+                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
             val ipInfo = SourceInfo(type = SourceType.IPTV, referenceId = ip.id, streamUrl = ip.streamUrl, headers = ip.headers, drmKeyId = ip.drmKeyId, drmKey = ip.drmKey)
             if (existing2 != null) {
                 if (!existing2.sources.containsKey(SourceType.IPTV)) {
@@ -821,7 +957,9 @@ class ChannelRepository @Inject constructor(
             if (idx % 500 == 0 && idx > 0) yield()
             val norm = ft.name.lowercase().trim()
             val canon = canonicalName(ft.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon] ?: findByNameFuzzyFast(ft.name, byCanonicalName, byWordIndex, byId)
+            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
+                ?: matchingEngine.findBestMatch(ft.name, null, ft.country, ft.language, emptyList(),
+                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
             val ftInfo = SourceInfo(type = SourceType.FREE_TV, referenceId = ft.id, streamUrl = ft.streamUrl, headers = ft.headers, drmKeyId = ft.drmKeyId, drmKey = ft.drmKey)
             if (existing2 != null) {
                 if (!existing2.sources.containsKey(SourceType.FREE_TV)) {
@@ -907,7 +1045,9 @@ class ChannelRepository @Inject constructor(
             if (idx % 500 == 0 && idx > 0) yield()
             val norm = fc.name.lowercase().trim()
             val canon = canonicalName(fc.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon] ?: findByNameFuzzyFast(fc.name, byCanonicalName, byWordIndex, byId)
+            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
+                ?: matchingEngine.findBestMatch(fc.name, null, fc.country, null, emptyList(),
+                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
             val fcInfo = SourceInfo(
                 type = SourceType.FAST_TV,
                 referenceId = fc.id,
@@ -958,7 +1098,9 @@ class ChannelRepository @Inject constructor(
             if (idx % 500 == 0 && idx > 0) yield()
             val norm = pr.name.lowercase().trim()
             val canon = canonicalName(pr.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon] ?: findByNameFuzzyFast(pr.name, byCanonicalName, byWordIndex, byId)
+            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
+                ?: matchingEngine.findBestMatch(pr.name, null, pr.country, null, emptyList(),
+                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
             val prInfo = SourceInfo(
                 type = SourceType.PREMIUM,
                 referenceId = pr.id,
@@ -1010,16 +1152,18 @@ class ChannelRepository @Inject constructor(
             if (idx % 500 == 0 && idx > 0) yield()
             val norm = ind.name.lowercase().trim()
             val canon = canonicalName(ind.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon] ?: findByNameFuzzyFast(ind.name, byCanonicalName, byWordIndex, byId)
+            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
+                ?: matchingEngine.findBestMatch(ind.name, null, ind.country, ind.language, emptyList(),
+                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
             val indInfo = SourceInfo(
-                type = SourceType.INDEPENDENT,
+                type = SourceType.VERIFIED,
                 referenceId = ind.id,
                 streamUrl = ind.streamUrl,
             )
             if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.INDEPENDENT)) {
+                if (!existing2.sources.containsKey(SourceType.VERIFIED)) {
                     val updated = existing2.copy(
-                        sources = existing2.sources + (SourceType.INDEPENDENT to indInfo),
+                        sources = existing2.sources + (SourceType.VERIFIED to indInfo),
                         country = existing2.country ?: ind.country,
                         language = existing2.language ?: ind.language,
                         logoUrl = existing2.logoUrl ?: ind.logoUrl,
@@ -1040,7 +1184,113 @@ class ChannelRepository @Inject constructor(
                     language = ind.language,
                     country = ind.country,
                     description = null,
-                    sources = mapOf(SourceType.INDEPENDENT to indInfo),
+                    sources = mapOf(SourceType.VERIFIED to indInfo),
+                )
+                byId[ch.id] = ch
+                byNameLower[norm] = ch
+                byCanonicalName[canon] = ch
+                words(ch.displayName).forEach { w ->
+                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
+                }
+            }
+        }
+
+        // Enrich with Free Live TV (Pluto, Plex, Roku, Tubi, Xumo, Distro TV, Free-TV/IPTV).
+        for ((idx, fl) in freeLive.withIndex()) {
+            if (idx % 500 == 0 && idx > 0) yield()
+            val norm = fl.name.lowercase().trim()
+            val canon = canonicalName(fl.name)
+            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
+                ?: matchingEngine.findBestMatch(fl.name, null, fl.country, null, emptyList(),
+                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
+            val flInfo = SourceInfo(
+                type = SourceType.FREE_CHANNEL,
+                referenceId = fl.id,
+                streamUrl = fl.streamUrl,
+                headers = fl.headers,
+                drmKeyId = fl.drmKeyId,
+                drmKey = fl.drmKey,
+            )
+            if (existing2 != null) {
+                if (!existing2.sources.containsKey(SourceType.FREE_CHANNEL)) {
+                    val updated = existing2.copy(
+                        sources = existing2.sources + (SourceType.FREE_CHANNEL to flInfo),
+                        country = existing2.country ?: fl.country,
+                        logoUrl = existing2.logoUrl ?: fl.logoUrl,
+                        category = if (existing2.category == CategoryNormalizer.C.GENERAL)
+                            CategoryNormalizer.normalize(fl.category, false) else existing2.category,
+                    )
+                    byId[updated.id] = updated
+                    byNameLower[norm] = updated
+                    val upCanon = canonicalName(updated.displayName)
+                    byCanonicalName[upCanon] = updated
+                }
+            } else {
+                val formattedName = ChannelNameFormatter.format(fl.name)
+                val ch = Channel(
+                    id = "free_${fl.id}",
+                    displayName = formattedName,
+                    logoUrl = fl.logoUrl,
+                    quality = null,
+                    category = CategoryNormalizer.normalize(fl.category, false)
+                        .let { if (it == CategoryNormalizer.C.GENERAL) CategoryNormalizer.fromChannelName(formattedName) else it },
+                    language = null,
+                    country = fl.country,
+                    description = null,
+                    sources = mapOf(SourceType.FREE_CHANNEL to flInfo),
+                )
+                byId[ch.id] = ch
+                byNameLower[norm] = ch
+                byCanonicalName[canon] = ch
+                words(ch.displayName).forEach { w ->
+                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
+                }
+            }
+        }
+
+        // Enrich with Broadcaster (direct FTA satellite & broadcaster CDN feeds).
+        for ((idx, bc) in broadcaster.withIndex()) {
+            if (idx % 500 == 0 && idx > 0) yield()
+            val norm = bc.name.lowercase().trim()
+            val canon = canonicalName(bc.name)
+            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
+                ?: matchingEngine.findBestMatch(bc.name, null, bc.country, bc.language, emptyList(),
+                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
+            val bcInfo = SourceInfo(
+                type = SourceType.BROADCASTER,
+                referenceId = bc.id,
+                streamUrl = bc.streamUrl,
+                headers = bc.headers,
+                drmKeyId = bc.drmKeyId,
+                drmKey = bc.drmKey,
+            )
+            if (existing2 != null) {
+                if (!existing2.sources.containsKey(SourceType.BROADCASTER)) {
+                    val updated = existing2.copy(
+                        sources = existing2.sources + (SourceType.BROADCASTER to bcInfo),
+                        country = existing2.country ?: bc.country,
+                        language = existing2.language ?: bc.language,
+                        logoUrl = existing2.logoUrl ?: bc.logoUrl,
+                    )
+                    byId[updated.id] = updated
+                    val upNorm = updated.displayName.lowercase().trim()
+                    byNameLower[upNorm] = updated
+                    val upCanon = canonicalName(updated.displayName)
+                    byCanonicalName[upCanon] = updated
+                }
+            } else {
+                val formattedName = ChannelNameFormatter.format(bc.name)
+                val ch = Channel(
+                    id = "bc_${bc.id}",
+                    displayName = formattedName,
+                    logoUrl = bc.logoUrl,
+                    quality = qualityFrom(bc.quality),
+                    category = CategoryNormalizer.normalize(bc.category, false)
+                        .let { if (it == CategoryNormalizer.C.GENERAL) CategoryNormalizer.fromChannelName(formattedName) else it },
+                    language = bc.language,
+                    country = bc.country,
+                    description = null,
+                    sources = mapOf(SourceType.BROADCASTER to bcInfo),
                 )
                 byId[ch.id] = ch
                 byNameLower[norm] = ch
@@ -1134,6 +1384,29 @@ class ChannelRepository @Inject constructor(
                 val threshold = (minOf(queryWords.size, chWords.size) * 0.5f).toInt().coerceAtLeast(1)
                 if (common.size >= threshold) common.size else 0
             }
+    }
+
+    /**
+     * Multi-signal channel matching that uses the [LogicalChannelMatcher] as a fallback when
+     * exact-name and canonical-name lookups fail. Also checks tvgId which the old pipeline
+     * entirely ignores for dedup purposes.
+     */
+    private fun findMatchMultiSignal(
+        name: String,
+        tvgId: String?,
+        country: String?,
+        language: String?,
+        byTvgId: Map<String, Channel>,
+        byId: Map<String, Channel>,
+    ): Channel? {
+        if (tvgId != null) {
+            byTvgId[tvgId.lowercase().trim()]?.let { return it }
+        }
+        val candidates = byId.values
+        return candidates.firstOrNull { ch ->
+            channelMatcher.findMatch(name, tvgId, country, language, emptyList(), listOf(ch))
+                ?.takeIf { it.confidence >= 0.55f } != null
+        }
     }
 
     /** Extract significant words from a display name — used by [findByNameFuzzyFast]. */

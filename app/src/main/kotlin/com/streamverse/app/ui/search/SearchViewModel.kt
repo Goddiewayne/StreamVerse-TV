@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.SearchHistoryPreferences
+import com.streamverse.core.data.sourceProviderCount
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.FavoritesRepository
 import com.streamverse.core.domain.model.Channel
@@ -109,7 +110,7 @@ class SearchViewModel @Inject constructor(
             else {
                 val fromCatalog = channels.asSequence()
                     .filter { it.displayName.isNotBlank() && it.logoUrl != null }
-                    .sortedByDescending { it.sources.size }
+                    .sortedByDescending { it.sourceProviderCount() }
                     .map { it.displayName }
                     .distinct()
                     .take(POPULAR_TARGET)

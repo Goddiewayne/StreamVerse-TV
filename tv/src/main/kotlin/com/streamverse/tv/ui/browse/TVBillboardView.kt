@@ -15,6 +15,7 @@ import android.widget.TextView
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.numberedDisplayName
 
 /**
  * Netflix-style full-bleed hero billboard with auto-cycling channels.
@@ -226,7 +227,7 @@ class TVBillboardView(context: Context) : FrameLayout(context) {
         currentChannel = ch
 
         val bind = Runnable {
-            nameLabel.text     = ch.displayName
+            nameLabel.text     = ch.numberedDisplayName()
             categoryLabel.text = ch.category?.uppercase() ?: ""
             categoryLabel.visibility = if (ch.category.isNullOrBlank()) GONE else VISIBLE
 

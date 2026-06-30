@@ -23,6 +23,8 @@ import com.streamverse.core.data.remote.iptv.IptvClient
 import com.streamverse.core.data.remote.premium.PremiumChannel
 import com.streamverse.core.data.remote.premium.PremiumClient
 import com.streamverse.core.data.remote.broadcaster.BroadcasterClient
+import com.streamverse.core.data.remote.youtube.YouTubeTvClient
+import com.streamverse.core.data.remote.youtube.YouTubeTvChannel
 
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
@@ -79,6 +81,7 @@ class ChannelRepository @Inject constructor(
     private val independentClient: IndependentClient,
     private val broadcasterClient: BroadcasterClient,
     private val freeLiveClient: FreeLiveClient,
+    private val youtubeTvClient: YouTubeTvClient,
     private val cacheManager: ChannelCacheManager,
     private val smartCacheManager: SmartCacheManager,
     private val sourcePreferences: SourcePreferences,
@@ -274,6 +277,7 @@ class ChannelRepository @Inject constructor(
     private var independentResults: List<IptvChannel> = emptyList()
     private var broadcasterResults: List<IptvChannel> = emptyList()
     private var freeLiveResults: List<FreeChannel> = emptyList()
+    private var youtubeTvResults: List<YouTubeTvChannel> = emptyList()
 
     /** Runs a source fetch under a hard timeout; returns empty on timeout/error so the merge
      *  proceeds with whatever else loaded instead of hanging forever. */
@@ -392,6 +396,9 @@ class ChannelRepository @Inject constructor(
                 freeLiveResults = fetchWithin(sourceFetchTimeoutMs) { freeLiveClient.fetchChannels().getOrDefault(emptyList()) }
                     .filterNot { it.name.trim() in deadChannelNames }; freeLiveResults.isNotEmpty()
             })
+            if (enabled[SourceProvider.YOUTUBE_TV] != false) defs.add(SourceDef(SourceProvider.YOUTUBE_TV, 30_000L) {
+                youtubeTvResults = fetchWithin(30_000L) { youtubeTvClient.discoverChannels() }; youtubeTvResults.isNotEmpty()
+            })
             return defs
         }
 
@@ -500,6 +507,10 @@ class ChannelRepository @Inject constructor(
                 freeLiveResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, null, null, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
                 SourceType.FREE_CHANNEL,
             )
+            SourceProvider.YOUTUBE_TV -> incrementalMergeState.mergeSources(
+                youtubeTvResults.map { SourceItem(it.referenceId, it.displayName, it.liveUrl, null, it.category, it.country, it.language, null) },
+                SourceType.YOUTUBE_TV,
+            )
             // canonicalOf guarantees only canonical values reach here; keep compiler happy
             SourceProvider.DLHD, SourceProvider.STMIFY, SourceProvider.INDEPENDENT -> {}
         }
@@ -563,6 +574,7 @@ class ChannelRepository @Inject constructor(
         independentResults = emptyList()
         broadcasterResults = emptyList()
         freeLiveResults = emptyList()
+        youtubeTvResults = emptyList()
     }
 
     /** Free one source's raw data immediately after merging to reduce peak memory. */
@@ -578,6 +590,7 @@ class ChannelRepository @Inject constructor(
             SourceProvider.VERIFIED -> independentResults = emptyList()
             SourceProvider.BROADCASTER -> broadcasterResults = emptyList()
             SourceProvider.FREE_CHANNEL -> freeLiveResults = emptyList()
+            SourceProvider.YOUTUBE_TV -> youtubeTvResults = emptyList()
             else -> {}
         }
     }
@@ -696,13 +709,28 @@ class ChannelRepository @Inject constructor(
     suspend fun getChannelById(id: String): Channel? {
         val indexed = _idIndex[id]
         val searched = lastSearchResults.find { it.id == id }
-        // Merge sources from both: the search pass may have folded in extra sources (e.g. a Stmify
-        // result) that aren't in the persisted index, so the opened channel stays multi-source.
         return when {
             indexed != null && searched != null ->
                 indexed.copy(sources = indexed.sources + searched.sources)
             else -> indexed ?: searched
         }
+    }
+
+    suspend fun getChannelBySourceRef(sourceType: SourceType, referenceId: String): Channel? {
+        val refId = referenceId.trim().lowercase()
+        return _idIndex.values.find { ch ->
+            ch.sources[sourceType]?.referenceId?.trim()?.lowercase() == refId
+        }
+    }
+
+    suspend fun getChannelsWithSource(sourceType: SourceType): List<Channel> = withContext(dispatchers.io) {
+        val result = mutableListOf<Channel>()
+        for ((id, ch) in byId.entries) {
+            if (sourceType in ch.sources) {
+                result.add(ch)
+            }
+        }
+        result
     }
 
     /**

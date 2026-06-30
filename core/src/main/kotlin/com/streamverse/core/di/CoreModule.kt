@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.room.Room
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.local.ChannelSearchDao
+import com.streamverse.core.data.local.DiscoveredSourceDao
 import com.streamverse.core.data.local.FavoriteDao
 import com.streamverse.core.data.local.StreamVerseDatabase
 import com.streamverse.core.data.remote.dlhd.DlhdClient
@@ -16,8 +18,16 @@ import com.streamverse.core.data.remote.iptv.FreeTvClient
 import com.streamverse.core.data.remote.iptv.IptvClient
 import com.streamverse.core.data.remote.premium.PremiumClient
 import com.streamverse.core.data.remote.premium.SourceHealthTracker
+import com.streamverse.core.data.remote.premium.hunter.AggregatorHunter
+import com.streamverse.core.data.remote.premium.hunter.BroadcasterHunter
+import com.streamverse.core.data.remote.premium.hunter.GitHubHunter
+import com.streamverse.core.data.remote.premium.hunter.PastebinHunter
+import com.streamverse.core.data.remote.premium.hunter.ResellerHunter
+import com.streamverse.core.data.remote.premium.hunter.SourceHunter
+import com.streamverse.core.data.remote.premium.hunter.SourceHunterManager
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
+import com.streamverse.core.data.remote.youtube.YouTubeTvClient
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.FavoritesRepository
 import com.streamverse.core.data.source.BroadcasterProviderAdapter
@@ -26,6 +36,7 @@ import com.streamverse.core.data.source.FastTvProviderAdapter
 import com.streamverse.core.data.source.FreeChannelProviderAdapter
 import com.streamverse.core.data.source.FreeTvProviderAdapter
 import com.streamverse.core.data.source.HealthMonitor
+import com.streamverse.core.data.source.YouTubeProviderAdapter
 import com.streamverse.core.data.source.IndependentProviderAdapter
 import com.streamverse.core.data.source.IptvProviderAdapter
 import com.streamverse.core.data.source.LogicalChannelMatcher
@@ -102,6 +113,7 @@ object CoreModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): StreamVerseDatabase =
         Room.databaseBuilder(context, StreamVerseDatabase::class.java, "streamverse.db")
+            .addMigrations(StreamVerseDatabase.MIGRATION_4_5)
             .fallbackToDestructiveMigration().build()
 
     @Provides @Singleton
@@ -109,6 +121,9 @@ object CoreModule {
 
     @Provides @Singleton
     fun provideChannelSearchDao(database: StreamVerseDatabase): ChannelSearchDao = database.channelSearchDao()
+
+    @Provides @Singleton
+    fun provideDiscoveredSourceDao(database: StreamVerseDatabase): DiscoveredSourceDao = database.discoveredSourceDao()
 
     @Provides @Singleton
     fun provideDlhdClient(gson: Gson, dispatchers: StreamVerseDispatchers): DlhdClient = DlhdClient(gson, dispatchers)
@@ -132,7 +147,15 @@ object CoreModule {
     fun provideFreeLiveClient(dispatchers: StreamVerseDispatchers, @ApplicationContext context: Context, okHttpClient: okhttp3.OkHttpClient): FreeLiveClient = FreeLiveClient(dispatchers, context, okHttpClient)
 
     @Provides @Singleton
-    fun providePremiumClient(dispatchers: StreamVerseDispatchers, healthTracker: SourceHealthTracker, okHttpClient: okhttp3.OkHttpClient, @ApplicationContext context: Context): PremiumClient = PremiumClient(dispatchers, healthTracker, okHttpClient, context)
+    fun providePremiumClient(
+        dispatchers: StreamVerseDispatchers,
+        healthTracker: SourceHealthTracker,
+        sourceHunterManager: SourceHunterManager,
+        discoveredSourceDao: DiscoveredSourceDao,
+        healthEngine: ChannelHealthEngine,
+        okHttpClient: okhttp3.OkHttpClient,
+        @ApplicationContext context: Context,
+    ): PremiumClient = PremiumClient(dispatchers, healthTracker, sourceHunterManager, discoveredSourceDao, healthEngine, okHttpClient, context)
 
     @Provides @Singleton
     fun provideIndependentClient(): IndependentClient = IndependentClient()
@@ -176,6 +199,7 @@ object CoreModule {
         independentClient: IndependentClient,
         broadcasterClient: BroadcasterClient,
         freeLiveClient: FreeLiveClient,
+        youtubeTvClient: YouTubeTvClient,
         cacheManager: com.streamverse.core.data.ChannelCacheManager,
         smartCacheManager: com.streamverse.core.data.SmartCacheManager,
         sourcePreferences: com.streamverse.core.data.SourcePreferences,
@@ -191,6 +215,7 @@ object CoreModule {
         dlhdClient, stmifyClient, iptvClient, freeTvClient,
         radioBrowserClient, fastTvClient, premiumClient,
         independentClient, broadcasterClient, freeLiveClient,
+        youtubeTvClient,
         cacheManager, smartCacheManager, sourcePreferences,
         dispatchers, sourceRegistry, channelMatcher, metadataAggregator,
         registryInitializer, providerRegistry, channelSearchDao, appContext,
@@ -242,6 +267,37 @@ object CoreModule {
     fun provideFreeChannelProviderAdapter(freeLiveClient: FreeLiveClient, dispatchers: StreamVerseDispatchers): FreeChannelProviderAdapter = FreeChannelProviderAdapter(freeLiveClient, dispatchers)
 
     @Provides @Singleton
+    fun provideYouTubeProviderAdapter(youtubeTvClient: YouTubeTvClient, dispatchers: StreamVerseDispatchers): YouTubeProviderAdapter = YouTubeProviderAdapter(youtubeTvClient, dispatchers)
+
+    // ── Source Hunters ────────────────────────────────────────────────────
+
+    @Provides @Singleton
+    fun provideGitHubHunter(okHttpClient: okhttp3.OkHttpClient): GitHubHunter = GitHubHunter(okHttpClient)
+
+    @Provides @Singleton
+    fun providePastebinHunter(okHttpClient: okhttp3.OkHttpClient): PastebinHunter = PastebinHunter(okHttpClient)
+
+    @Provides @Singleton
+    fun provideAggregatorHunter(okHttpClient: okhttp3.OkHttpClient): AggregatorHunter = AggregatorHunter(okHttpClient)
+
+    @Provides @Singleton
+    fun provideResellerHunter(okHttpClient: okhttp3.OkHttpClient): ResellerHunter = ResellerHunter(okHttpClient)
+
+    @Provides @Singleton
+    fun provideBroadcasterHunter(okHttpClient: okhttp3.OkHttpClient): BroadcasterHunter = BroadcasterHunter(okHttpClient)
+
+    @Provides @Singleton
+    fun provideSourceHunterManager(
+        gitHubHunter: GitHubHunter,
+        pastebinHunter: PastebinHunter,
+        aggregatorHunter: AggregatorHunter,
+        resellerHunter: ResellerHunter,
+        broadcasterHunter: BroadcasterHunter,
+    ): SourceHunterManager = SourceHunterManager(
+        listOf(gitHubHunter, pastebinHunter, aggregatorHunter, resellerHunter, broadcasterHunter)
+    )
+
+    @Provides @Singleton
     fun provideAllProviderAdapters(
         iptv: IptvProviderAdapter,
         freeTv: FreeTvProviderAdapter,
@@ -253,8 +309,9 @@ object CoreModule {
         independent: IndependentProviderAdapter,
         broadcaster: BroadcasterProviderAdapter,
         freeChannel: FreeChannelProviderAdapter,
+        youTube: YouTubeProviderAdapter,
     ): List<ProviderAdapter> = listOf(
         iptv, freeTv, fastTv, dlhd, stmify,
-        radio, premium, independent, broadcaster, freeChannel,
+        radio, premium, independent, broadcaster, freeChannel, youTube,
     )
 }

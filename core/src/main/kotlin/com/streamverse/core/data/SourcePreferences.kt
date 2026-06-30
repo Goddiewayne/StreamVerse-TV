@@ -58,6 +58,11 @@ enum class SourceProvider(
         "Pluto TV, Plex, Roku, Tubi, Xumo & Distro TV direct CDN playlists",
         ProviderGroup.FAST_SERVICE,
     ),
+    YOUTUBE_TV(
+        "YouTube TV",
+        "Live TV channels streaming on YouTube, prioritized by your region",
+        ProviderGroup.FAST_SERVICE,
+    ),
 
     // ── Sports & Events ────────────────────────────────────────────────────
     SPORTS_EVENTS(
@@ -124,6 +129,7 @@ enum class SourceProvider(
             SourceType.PREMIUM -> PREMIUM
             SourceType.BROADCASTER -> BROADCASTER
             SourceType.RADIO -> RADIO
+            SourceType.YOUTUBE_TV -> YOUTUBE_TV
             // Keep the compiler happy — deprecated values still exist
             SourceType.INDEPENDENT -> VERIFIED
             SourceType.DLHD -> SPORTS_EVENTS

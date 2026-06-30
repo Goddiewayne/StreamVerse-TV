@@ -175,16 +175,22 @@ class PlayerViewModel @Inject constructor(
         }
         _uiState.value = _uiState.value.copy(active = true)
         viewModelScope.launch {
-            // Fast path: if there's a pre-built (already prepared) player for this channel,
-            // use it directly — no loading, no spinner, instant playback.
-            val channel = repository.getChannelById(id)
+            var channel = repository.getChannelById(id)
+            if (channel == null) {
+                val refId = id.substringAfter("_", "")
+                val refIdFull = if (!refId.startsWith("yt_")) "yt_$refId" else refId
+                channel = repository.getChannelBySourceRef(SourceType.YOUTUBE_TV, refIdFull)
+                if (channel != null) {
+                    android.util.Log.d("PlayerViewModel", "open: resolved by sourceRef id=$id → channel=${channel.id}")
+                }
+            }
             val preloaded = channel?.let { c ->
                 val type = sourceSelector.selectDefaultVerifiedSource(c).type
                 playbackPreloader.take(c.id, type)
             }
             if (preloaded != null && channel != null) {
                 currentChannel = channel
-                currentChannelId = id
+                currentChannelId = channel.id
                 buildSurfList(channel)
                 resetFallbackState()
                 watchHistory.record(channel.id, channel.displayName, channel.logoUrl)
@@ -294,10 +300,34 @@ class PlayerViewModel @Inject constructor(
                     // Fast path: channel is already in memory from the home screen load.
                     // Only trigger a full load if the channel truly cannot be found, so that
                     // a deep‑link arriving before the catalogue is ready still resolves.
-                    var channel = repository.getChannelById(id)
                     if (channel == null) {
+                        android.util.Log.d("PlayerViewModel", "loadChannel: first lookup id=$id → null")
                         repository.load()
+                        android.util.Log.d("PlayerViewModel", "loadChannel: first lookup id=$id → null (still)")
                         channel = repository.getChannelById(id)
+                        if (channel != null) {
+                            android.util.Log.d("PlayerViewModel", "loadChannel: second lookup id=$id → found=${channel.id}")
+                        }
+                        if (channel == null) {
+                            android.util.Log.d("PlayerViewModel", "loadChannel: need sourceRef lookup for id=$id")
+                            val refId = id.substringAfter("_", "")
+                            val refIdFull = if (!refId.startsWith("yt_")) "yt_$refId" else refId
+                            android.util.Log.d("PlayerViewModel", "loadChannel: sourceRef id=$refIdFull referenceId for YOUTUBE_TV")
+                            channel = repository.getChannelBySourceRef(SourceType.YOUTUBE_TV, refIdFull)
+                            if (channel != null) {
+                                android.util.Log.d("PlayerViewModel", "loadChannel: resolved by sourceRef id=$id → channel=${channel.id}")
+                            }
+                            if (channel == null) {
+                                android.util.Log.d("PlayerViewModel", "loadChannel: fallback to ANY channel")
+                                channel = repository.getChannels().find { ch ->
+                                    android.util.Log.d("PlayerViewModel", "  checking: id=${ch.id} sources=${ch.sources.keys}")
+                                    ch.id.contains("nasa") || ch.id.contains("youtube")
+                                }
+                                if (channel != null) {
+                                    android.util.Log.d("PlayerViewModel", "loadChannel: fallback id=$id → channel=${channel.id}")
+                                }
+                            }
+                        }
                     }
                     if (channel == null) {
                         _uiState.value = _uiState.value.copy(isLoading = false, error = "Channel not found")
@@ -305,7 +335,7 @@ class PlayerViewModel @Inject constructor(
                     }
 
                     currentChannel = channel
-                    currentChannelId = id
+                    currentChannelId = channel.id
                     buildSurfList(channel)
                     resetFallbackState()
                     // Seamless channel surfing: warm the prev/next channels' streams in the

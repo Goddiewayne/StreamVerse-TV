@@ -48,7 +48,8 @@ class StreamResolver @Inject constructor(
     suspend fun resolve(sourceInfo: SourceInfo): Result<StreamInfo> {
         return when (SourceType.canonicalOf(sourceInfo.type)) {
             SourceType.IPTV, SourceType.FREE_TV, SourceType.RADIO, SourceType.FAST_TV,
-            SourceType.VERIFIED, SourceType.PREMIUM, SourceType.BROADCASTER, SourceType.FREE_CHANNEL -> {
+            SourceType.VERIFIED, SourceType.PREMIUM, SourceType.BROADCASTER, SourceType.FREE_CHANNEL,
+            SourceType.YOUTUBE_TV -> {
                 val url = sourceInfo.streamUrl
                 if (url != null) {
                     val isWebPage = isYouTube(url) || url.contains("channelstv.com/live")
@@ -120,6 +121,7 @@ class StreamResolver @Inject constructor(
             SourceType.VERIFIED,
             SourceType.BROADCASTER,
             SourceType.FREE_CHANNEL,
+            SourceType.YOUTUBE_TV,
             SourceType.SPORTS_EVENTS,
             SourceType.WORLD_TV,
             SourceType.IPTV,

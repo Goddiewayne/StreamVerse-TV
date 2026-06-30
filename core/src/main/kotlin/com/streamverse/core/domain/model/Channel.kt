@@ -35,6 +35,9 @@ enum class SourceType {
     /** Middle Eastern, African & international channels with search support. */
     WORLD_TV,
 
+    /** YouTube channels broadcasting live TV, resolved via NewPipeExtractor. */
+    YOUTUBE_TV,
+
     // ── Deprecated aliases (kept for cache/backward compatibility) ────────
     /** @deprecated Use [VERIFIED] */
     INDEPENDENT,

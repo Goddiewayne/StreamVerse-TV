@@ -135,6 +135,9 @@ class IncrementalMergeState(
                     description = null,
                     sources = mapOf(sourceType to info),
                 )
+                if (sourceType == SourceType.YOUTUBE_TV) {
+                    android.util.Log.d("MergeState", "YOUTUBE_TV new channel: id=${newCh.id} name=${newCh.displayName} refId=${item.id}")
+                }
                 synchronized(this) { addToIndexes(newCh); localAdded++ }
             }
         }

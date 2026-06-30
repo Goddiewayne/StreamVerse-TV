@@ -18,6 +18,7 @@ import com.streamverse.core.data.remote.premium.PremiumChannel
 import com.streamverse.core.data.remote.premium.PremiumClient
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
+import com.streamverse.core.data.remote.youtube.YouTubeTvChannel
 import com.streamverse.core.domain.model.SourceType
 import com.streamverse.core.util.StreamVerseDispatchers
 import kotlinx.coroutines.Dispatchers
@@ -278,6 +279,31 @@ class FreeChannelProviderAdapter @Inject constructor(
     override suspend fun shutdown() { _state.value = _state.value.copy(lifecycle = LifecycleState.SHUTDOWN) }
 }
 
+class YouTubeProviderAdapter @Inject constructor(
+    private val youtubeTvClient: com.streamverse.core.data.remote.youtube.YouTubeTvClient,
+    private val dispatchers: StreamVerseDispatchers,
+) : ProviderAdapter {
+    override val providerId = "youtube_tv"
+    override val displayName = "YouTube TV"
+    override val sourceProvider = SourceProvider.YOUTUBE_TV
+    override val primarySourceType = SourceType.YOUTUBE_TV
+    override val capabilities = setOf(ProviderCapability.CHANNEL_DISCOVERY)
+
+    private val _state = MutableStateFlow(ProviderState(providerId = providerId, lifecycle = LifecycleState.REGISTERED))
+    override val state: StateFlow<ProviderState> = _state.asStateFlow()
+
+    override suspend fun discoverChannels(): List<SourceChannelDTO> = withContext(dispatchers.io) {
+        youtubeTvClient.discoverChannels().map { it.toDTO() }
+    }
+
+    override suspend fun refreshMetadata(channelRefIds: List<String>): Map<String, SourceChannelDTO> = emptyMap()
+    override suspend fun refreshStreams(channelRefIds: List<String>): Map<String, String?> = emptyMap()
+    override suspend fun validateStream(referenceId: String): StreamValidation = StreamValidation(referenceId, false)
+    override suspend fun healthCheck(): ProviderHealth = ProviderHealth(isHealthy = true)
+    override suspend fun initialize() { _state.value = _state.value.copy(lifecycle = LifecycleState.ACTIVE) }
+    override suspend fun shutdown() { _state.value = _state.value.copy(lifecycle = LifecycleState.SHUTDOWN) }
+}
+
 private fun IptvChannel.toDTO(providerId: String) = SourceChannelDTO(
     providerId = providerId,
     referenceId = id,
@@ -358,5 +384,15 @@ private fun RadioStation.toDTO() = SourceChannelDTO(
     streamUrl = streamUrl,
     logoUrl = logoUrl,
     country = countryCode,
+    language = language,
+)
+
+private fun YouTubeTvChannel.toDTO() = SourceChannelDTO(
+    providerId = "youtube_tv",
+    referenceId = referenceId,
+    name = displayName,
+    streamUrl = liveUrl,
+    category = category,
+    country = country,
     language = language,
 )

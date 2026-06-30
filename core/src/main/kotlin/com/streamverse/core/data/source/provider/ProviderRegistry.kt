@@ -72,6 +72,7 @@ class ProviderRegistry @Inject constructor() {
         SourceProvider.SPORTS_EVENTS, SourceProvider.DLHD -> listOf(SourceType.SPORTS_EVENTS, SourceType.DLHD)
         SourceProvider.WORLD_TV, SourceProvider.STMIFY -> listOf(SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM)
         SourceProvider.PREMIUM -> listOf(SourceType.PREMIUM)
+        SourceProvider.YOUTUBE_TV -> listOf(SourceType.YOUTUBE_TV)
         SourceProvider.RADIO -> listOf(SourceType.RADIO)
     }
 
@@ -97,6 +98,7 @@ class ProviderRegistry @Inject constructor() {
                 SourceType.FAST_TV -> 20f
                 SourceType.IPTV -> 15f
                 SourceType.FREE_TV -> 14f
+                SourceType.YOUTUBE_TV -> 32f
                 SourceType.RADIO -> 5f
                 // Deprecated types resolved above — unreachable
                 SourceType.INDEPENDENT, SourceType.DLHD,
@@ -254,6 +256,21 @@ class ProviderRegistry @Inject constructor() {
             requiresResolution = true,
             overlappingTypes = setOf(SourceType.SPORTS_EVENTS),
         ),
+        SourceType.YOUTUBE_TV to ProviderMetadata(
+            id = "youtube_tv",
+            displayName = "YouTube TV",
+            description = "Live TV channels streaming on YouTube, resolved to HLS via NewPipeExtractor",
+            group = ProviderGroup.FAST_SERVICE,
+            geographicScope = GeographicScope.GLOBAL,
+            contentFocus = ContentFocus.GENERAL,
+            reliabilityTier = ReliabilityTier.UNVERIFIED,
+            acquisitionMethod = AcquisitionMethod.REST_API,
+            authModel = AuthModel.NONE,
+            sourceType = SourceType.YOUTUBE_TV,
+            epgSupported = false,
+            refreshStrategy = RefreshStrategy.WEEKLY,
+            overlappingTypes = setOf(SourceType.FREE_CHANNEL),
+        ),
         SourceType.RADIO to ProviderMetadata(
             id = "radio_browser",
             displayName = "Radio Browser",
@@ -277,6 +294,7 @@ class ProviderRegistry @Inject constructor() {
         SourceType.SPORTS_EVENTS to 3,
         SourceType.WORLD_TV to 4,
         SourceType.PREMIUM to 5,
+        SourceType.YOUTUBE_TV to 3,
         SourceType.FAST_TV to 6,
         SourceType.IPTV to 7,
         SourceType.FREE_TV to 8,

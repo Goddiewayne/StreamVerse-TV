@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- YouTube Data API v3 key for dynamic channel discovery. Leave empty if not used. -->
+    <string name="youtube_data_api_key" translatable="false"></string>
+</resources>

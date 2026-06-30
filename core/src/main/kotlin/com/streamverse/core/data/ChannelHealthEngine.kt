@@ -178,6 +178,14 @@ class ChannelHealthEngine @Inject constructor(
     fun sourceHealthForChannel(channelId: String): Map<SourceType, SourceHealth> =
         perSourceHealth[channelId] ?: emptyMap()
 
+    /**
+     * Returns the count of channels that have failed repeatedly (high failure streak).
+     * Used by [PremiumClient] to decide whether to trigger source hunting.
+     */
+    fun degradedSourceCount(): Int = healthMap.count { (_, health) ->
+        !health.isLive && health.failureStreak >= 2
+    }
+
     fun bestSource(channel: Channel): SourceType? =
         sourceResolutionEngine.bestSource(channel)
 

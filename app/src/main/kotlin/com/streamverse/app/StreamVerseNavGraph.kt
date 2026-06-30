@@ -138,9 +138,12 @@ fun StreamVerseNavGraph(initialChannelId: String? = null, onNavigated: () -> Uni
     }
 
     LaunchedEffect(initialChannelId) {
+        android.util.Log.d("NavGraph", "LaunchedEffect: initialChannelId=$initialChannelId")
         if (initialChannelId != null) {
+            android.util.Log.d("NavGraph", "Calling openChannel($initialChannelId)")
             openChannel(initialChannelId)
             onNavigated()
+            android.util.Log.d("NavGraph", "openChannel completed")
         }
     }
     val currentDestination = navBackStackEntry?.destination

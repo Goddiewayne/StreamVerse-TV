@@ -45,6 +45,9 @@ class SettingsViewModel @Inject constructor(
     private val _backgroundPlayback = MutableStateFlow(playbackPreferences.backgroundPlayback)
     val backgroundPlayback: StateFlow<Boolean> = _backgroundPlayback.asStateFlow()
 
+    private val _dataSaver = MutableStateFlow(sourcePreferences.isDataSaverEnabled())
+    val dataSaver: StateFlow<Boolean> = _dataSaver.asStateFlow()
+
     private val _resizeMode = MutableStateFlow(playbackPreferences.resizeMode)
     val resizeMode: StateFlow<VideoResizeMode> = _resizeMode.asStateFlow()
 
@@ -77,6 +80,11 @@ class SettingsViewModel @Inject constructor(
     fun toggleBackgroundPlayback(enabled: Boolean) {
         playbackPreferences.backgroundPlayback = enabled
         _backgroundPlayback.value = enabled
+    }
+
+    fun toggleDataSaver(enabled: Boolean) {
+        sourcePreferences.setDataSaverEnabled(enabled)
+        _dataSaver.value = enabled
     }
 
     fun setResizeMode(mode: VideoResizeMode) {

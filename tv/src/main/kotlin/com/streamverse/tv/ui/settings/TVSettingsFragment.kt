@@ -98,6 +98,16 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
 
         actions.add(
             GuidedAction.Builder(requireContext())
+                .id(ID_DATA_SAVER)
+                .title("Data Saver")
+                .description("Reduce data usage: force low bitrate, cap pre‑buffer, skip preloading")
+                .checkSetId(GuidedAction.CHECKBOX_CHECK_SET_ID)
+                .checked(sourcePreferences.isDataSaverEnabled())
+                .build()
+        )
+
+        actions.add(
+            GuidedAction.Builder(requireContext())
                 .id(ID_VIDEO_FIT)
                 .title("Video: Fit")
                 .description("Letterbox/pillarbox — full video visible, may have bars")
@@ -214,6 +224,10 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
                 playbackPreferences.keepScreenOn = action.isChecked
             }
 
+            action.id == ID_DATA_SAVER -> {
+                sourcePreferences.setDataSaverEnabled(action.isChecked)
+            }
+
             action.id == ID_VIDEO_FIT -> {
                 playbackPreferences.resizeMode = com.streamverse.core.data.VideoResizeMode.FIT
             }
@@ -283,6 +297,7 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
         private const val ID_CACHE_CLEAR_ALL = 154L
         private const val ID_PLAYBACK_HEADER = 200L
         private const val ID_KEEP_SCREEN_ON  = 201L
+        private const val ID_DATA_SAVER      = 205L
         private const val ID_VIDEO_FIT       = 202L
         private const val ID_VIDEO_FILL       = 203L
         private const val ID_VIDEO_ZOOM       = 204L

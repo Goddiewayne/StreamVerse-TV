@@ -30,6 +30,7 @@ import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.ChannelSummary
 import com.streamverse.core.util.ChannelLogoResolver
 import kotlin.math.abs
 
@@ -43,6 +44,52 @@ import kotlin.math.abs
  *
  * Bulletproof: there is always something full and beautiful to show.
  */
+@Composable
+fun ChannelLogo(
+    channel: ChannelSummary,
+    modifier: Modifier = Modifier,
+    logoPadding: Dp = 8.dp,
+) {
+    val (c1, c2) = remember(channel.id) { accentColors(channel.displayName) }
+    var loaded by remember(channel.id) { mutableStateOf(false) }
+    val model = remember(channel.id) { ChannelLogoResolver.model(channel) }
+    val context = LocalContext.current
+    val logoRequest = remember(model) {
+        ImageRequest.Builder(context).data(model).crossfade(220).build()
+    }
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Brush.linearGradient(listOf(c1.copy(alpha = 0.55f), c2.copy(alpha = 0.55f)))),
+        )
+
+        if (loaded && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            AsyncImage(
+                model = model,
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(26.dp)
+                    .alpha(0.55f),
+                contentScale = ContentScale.Crop,
+            )
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)))
+        }
+
+        if (!loaded) Monogram(name = channel.displayName, c1 = c1, c2 = c2)
+
+        AsyncImage(
+            model = logoRequest,
+            contentDescription = channel.displayName,
+            modifier = Modifier.fillMaxSize().padding(logoPadding),
+            contentScale = ContentScale.Fit,
+            onState = { state -> loaded = state is AsyncImagePainter.State.Success },
+        )
+    }
+}
+
 @Composable
 fun ChannelLogo(
     channel: Channel,

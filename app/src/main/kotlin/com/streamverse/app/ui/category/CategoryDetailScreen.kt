@@ -106,13 +106,13 @@ fun ChannelListScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            items(channels, key = { it.id }) { channel ->
-                ChannelCard(
-                    channel = channel,
-                    onClick = { onChannelClick(channel.id) },
-                    isFavorite = favIds.contains(channel.id),
-                    onToggleFavorite = { viewModel.toggleFavorite(channel) },
-                )
+                    items(channels, key = { it.id }) { ch ->
+                        ChannelCard(
+                            channel = ch,
+                            onClick = { onChannelClick(ch.id) },
+                            isFavorite = favIds.contains(ch.id),
+                            onToggleFavorite = { viewModel.toggleFavorite(ch.id) },
+                        )
             }
         }
     }

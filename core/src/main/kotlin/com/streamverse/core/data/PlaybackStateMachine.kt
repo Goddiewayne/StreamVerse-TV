@@ -62,7 +62,8 @@ class PlaybackStateMachine {
     @Volatile private var hasFallbackSource: Boolean = false
 
     /** True when the current source has ever reached STATE_READY (played at least one frame). */
-    @Volatile private var hasEverPlayed: Boolean = false
+    @Volatile private var _hasEverPlayed: Boolean = false
+    val hasEverPlayed: Boolean get() = _hasEverPlayed
 
     @Volatile private var retryCount: Int = 0
     private val maxRetries = 5
@@ -73,11 +74,11 @@ class PlaybackStateMachine {
     fun reset() {
         _state = State.IDLE
         hasFallbackSource = false
-        hasEverPlayed = false
+        _hasEverPlayed = false
         retryCount = 0
     }
 
-    fun markHasEverPlayed() { hasEverPlayed = true }
+    fun markHasEverPlayed() { _hasEverPlayed = true }
 
     fun setHasFallbackSource(has: Boolean) { hasFallbackSource = has }
 
@@ -88,7 +89,7 @@ class PlaybackStateMachine {
         val next = computeNext(event) ?: return
         _state = next
         if (event == Event.PLAYBACK_ERROR && next == State.FAILED) retryCount++
-        if (next == State.PLAYING) { hasEverPlayed = true; retryCount = 0 }
+        if (next == State.PLAYING) { _hasEverPlayed = true; retryCount = 0 }
         if (next == State.IDLE) reset()
         if (prev != next) onStateChanged?.invoke(next)
     }

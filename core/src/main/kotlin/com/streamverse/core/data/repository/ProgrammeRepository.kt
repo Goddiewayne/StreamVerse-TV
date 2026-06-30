@@ -22,6 +22,8 @@ class ProgrammeRepository @Inject constructor(
     private val epgManager: EpgManager,
     private val rankingEngine: ChannelRankingEngine,
 ) {
+    /** EPG is considered unreliable — synthetic fallback only. UI should deprioritize programme info. */
+    val hasReliableEpg: Boolean = false
 
     private val _trending = MutableStateFlow<List<TrendingChannel>>(emptyList())
     val trending: StateFlow<List<TrendingChannel>> = _trending.asStateFlow()
@@ -423,6 +425,16 @@ class ProgrammeRepository @Inject constructor(
         val synopses = synopsisMap[category] ?: genericSynopses
         val base = synopses[Random.nextInt(synopses.size)]
         return "$title — $base"
+    }
+
+    fun shouldShowProgrammeInfo(): Boolean = hasReliableEpg
+
+    fun safeProgrammeTitle(channel: Channel): String? {
+        return if (hasReliableEpg) getProgramme(channel).currentProgramme?.title else null
+    }
+
+    fun safeProgrammeDescription(channel: Channel): String? {
+        return if (hasReliableEpg) getProgramme(channel).currentProgramme?.synopsis else null
     }
 
     private fun computeTimeOfDay(): TimeOfDay {

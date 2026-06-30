@@ -6,6 +6,8 @@ import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.FavoritesRepository
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.ChannelSummary
+import com.streamverse.core.domain.model.toSummary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,7 +20,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class FavoritesUiState(
-    val channels: List<Channel> = emptyList(),
+    val channels: List<ChannelSummary> = emptyList(),
     val isLoading: Boolean = true,
 )
 
@@ -40,16 +42,20 @@ class FavoritesViewModel @Inject constructor(
         viewModelScope.launch {
             combine(
                 favoritesRepository.getAllFavorites(),
-                repository.channels.map { list -> list.associateBy { it.id } },
-            ) { favorites, channelById ->
-                favorites.mapNotNull { fav -> channelById[fav.channelId] }
+                repository.availableChannelIds,
+                healthEngine.liveChannelIds,
+            ) { favorites, availableIds, liveIds ->
+                val byId = repository.getChannelByIdMap()
+                val resolved = favorites.mapNotNull { fav ->
+                    if (fav.channelId in availableIds) byId[fav.channelId] else null
+                }
+                if (liveIds.isNotEmpty()) resolved.filter { it.id in liveIds } else resolved
             }.collect { resolved ->
+                healthEngine.verify(resolved, deep = true)
                 _uiState.value = FavoritesUiState(
-                    channels = resolved,
+                    channels = resolved.map { it.toSummary() },
                     isLoading = false,
                 )
-                // Favourites are prime "likely to watch" — verify them deeply for LIVE badges.
-                healthEngine.verify(resolved, deep = true)
             }
         }
     }

@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -56,6 +57,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -95,7 +97,9 @@ import com.streamverse.app.ui.components.LiveBadge
 import com.streamverse.app.ui.components.LocalLiveChannels
 import com.streamverse.app.ui.components.QualityBadge
 import com.streamverse.app.ui.components.SignalLossOverlay
-import com.streamverse.app.ui.components.TvStatic
+
+import com.streamverse.core.data.SourceHealth
+import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.VideoResizeMode
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.Quality
@@ -348,9 +352,10 @@ private fun ExpandedPlayer(
             video()
         }
 
-        if (state.channel != null) {
-            val channel = state.channel
-            val guide = state.guideChannels
+            if (state.channel != null) {
+                val channel = state.channel
+                val guide = state.guideChannels
+                val sourceHealth by viewModel.sourceHealthStates.collectAsStateWithLifecycle()
 
             // ── Pinned header: channel metadata + source picker. Always visible (does NOT scroll
             // away with the guide) so switching source / surfing is always one tap away. ──
@@ -406,6 +411,7 @@ private fun ExpandedPlayer(
                 SourcePicker(
                     sources = state.availableSources,
                     selected = state.selectedSource,
+                    sourceHealth = sourceHealth,
                     onSelect = { viewModel.selectSource(it) },
                 )
             }
@@ -631,11 +637,14 @@ private fun SurfButton(label: String, onClick: () -> Unit, modifier: Modifier = 
 /**
  * Lets the viewer choose which source to watch a multi-source channel from. The best source is
  * already playing; tapping a chip switches in place. A single-source channel just shows its label.
+ * Horizontally scrollable via LazyRow, with unlimited sources. Each chip displays per-source
+ * health state: Now Playing, Live (AVAILABLE), Verifying, Unavailable, or no badge (unknown).
  */
 @Composable
 private fun SourcePicker(
     sources: List<SourceOption>,
     selected: SourceType?,
+    sourceHealth: Map<SourceType, SourceHealth>,
     onSelect: (SourceType) -> Unit,
 ) {
     if (sources.isEmpty()) return
@@ -646,44 +655,110 @@ private fun SourcePicker(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        val listState = rememberLazyListState()
+        LaunchedEffect(selected) {
+            val idx = sources.indexOfFirst { it.type == selected }
+            if (idx >= 0) listState.animateScrollToItem(idx)
+        }
+        LazyRow(
+            state = listState,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            sources.forEach { option ->
-                val isSelected = option.type == selected
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(
-                            if (isSelected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.surfaceVariant,
-                        )
-                        .clickable { onSelect(option.type) }
-                        .semantics {
-                            contentDescription =
-                                (if (isSelected) "Now watching from " else "Watch from ") + option.label
-                        }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                ) {
-                    if (isSelected) {
-                        Icon(
-                            Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-                    Text(
-                        text = option.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurface,
-                    )
-                }
+            items(sources, key = { it.type }) { option ->
+                SourceChip(
+                    option = option,
+                    health = sourceHealth[option.type],
+                    isSelected = option.type == selected,
+                    onClick = { onSelect(option.type) },
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun SourceChip(
+    option: SourceOption,
+    health: SourceHealth?,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    val chipBackground = when {
+        isSelected -> MaterialTheme.colorScheme.primary
+        health?.state == SourceHealthState.UNAVAILABLE -> MaterialTheme.colorScheme.errorContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val chipTextColor = when {
+        isSelected -> MaterialTheme.colorScheme.onPrimary
+        health?.state == SourceHealthState.UNAVAILABLE -> MaterialTheme.colorScheme.onErrorContainer
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(chipBackground)
+            .clickable { onClick }
+            .semantics {
+                val prefix = when {
+                    isSelected -> "Now watching from "
+                    health?.state == SourceHealthState.AVAILABLE -> "Live from "
+                    else -> "Watch from "
+                }
+                contentDescription = prefix + option.label
+            }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        when {
+            isSelected -> {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            health?.state == SourceHealthState.AVAILABLE -> {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF4CAF50)),
+                )
+            }
+            health?.state == SourceHealthState.VERIFYING -> {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xFFFFA726),
+                )
+            }
+            health?.state == SourceHealthState.UNAVAILABLE -> {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
+        if (isSelected || health?.state != null) {
+            Spacer(modifier = Modifier.width(4.dp))
+        }
+        Text(
+            text = option.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = chipTextColor,
+        )
+        if (isSelected) {
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = "Now Playing",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimary,
+            )
         }
     }
 }
@@ -697,14 +772,13 @@ private fun PlayerFrame(
     minimized: Boolean = false,
 ) {
     val context = LocalContext.current
-    // No-signal static preferences (mirrors the keep-screen-on/resize-mode SharedPreferences
-    // pattern used elsewhere on this screen, so no Hilt plumbing into composition is needed).
+    val prebuiltPlayer by viewModel.takenPlayer.collectAsState()
+    val onPlayerConsumed = remember { { viewModel.clearTakenPlayer() } }
     val staticPrefs = remember { context.getSharedPreferences("playback_prefs", 0) }
     val staticIntensity = remember {
         TvStaticView.Intensity.fromKey(staticPrefs.getString("static_intensity", "medium"))
     }
     val staticAudio = remember { staticPrefs.getBoolean("static_audio", false) }
-    val channelBurst = remember { staticPrefs.getBoolean("static_channel_burst", true) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Crossfade between the live content and the no-signal static so failures fade IN over the
@@ -726,14 +800,6 @@ private fun PlayerFrame(
                 Box(modifier = Modifier.fillMaxSize()) {
                     when {
                         state.isLoading -> {
-                            // A faint "tuning" snow under the spinner makes a channel change feel
-                            // like turning a TV dial, not waiting on an app. Configurable.
-                            if (channelBurst) {
-                                TvStatic(
-                                    intensity = TvStaticView.Intensity.LOW,
-                                    audioEnabled = false,
-                                )
-                            }
                             CircularProgressIndicator(
                                 modifier = Modifier.align(Alignment.Center),
                                 color = MaterialTheme.colorScheme.primary,
@@ -764,6 +830,8 @@ private fun PlayerFrame(
                                 playWhenReady = state.playWhenReady,
                                 onError = { msg -> viewModel.onPlayerError(msg) },
                                 onPlayingChanged = { viewModel.onPlaybackStateChanged(it) },
+                                prebuiltPlayer = prebuiltPlayer,
+                                onPrebuiltPlayerConsumed = onPlayerConsumed,
                             )
                         }
                         state.streamUrl != null && state.mode == PlayerStreamMode.CUSTOM_TAB -> {
@@ -1231,6 +1299,8 @@ private fun ExoPlayerPlayer(
     playWhenReady: Boolean = true,
     onError: (String) -> Unit,
     onPlayingChanged: ((Boolean) -> Unit)? = null,
+    prebuiltPlayer: ExoPlayer? = null,
+    onPrebuiltPlayerConsumed: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -1247,29 +1317,39 @@ private fun ExoPlayerPlayer(
     // SAME PlayerView and release the old one. The outgoing channel stays on screen until the
     // incoming one is ready — no black gap, no audio overlap — exactly like the TV app's
     // preload/performSwap. Any slowness degrades gracefully to "tuning static over the buffer".
-    LaunchedEffect(url, referer, headers, drmKeyId, drmKey, drmLicenseUrl) {
+    LaunchedEffect(url, referer, headers, drmKeyId, drmKey, drmLicenseUrl, prebuiltPlayer) {
         val previous = activePlayer
-        val next = buildExoPlayer(context, url, referer, headers, drmKeyId, drmKey, drmLicenseUrl, onError)
-        if (previous == null) {
-            // First channel on this screen — tuning static until the first frame, as before.
-            videoVisible = false
+        val next: ExoPlayer
+        var tookPrebuilt = false
+        if (prebuiltPlayer != null) {
+            // Pre-built player from the preloader — already at STATE_READY.
+            next = prebuiltPlayer
             next.playWhenReady = playWhenReady
+            tookPrebuilt = true
+            onPrebuiltPlayerConsumed()
+        } else {
+            next = buildExoPlayer(context, url, referer, headers, drmKeyId, drmKey, drmLicenseUrl, onError)
+        }
+        if (previous == null) {
+            videoVisible = false
+            if (!tookPrebuilt) next.playWhenReady = playWhenReady
             activePlayer = next
             return@LaunchedEffect
         }
         var swapped = false
         try {
-            val ready = kotlinx.coroutines.withTimeoutOrNull(SEAMLESS_READY_TIMEOUT_MS) {
+            val ready = if (tookPrebuilt) true
+            else kotlinx.coroutines.withTimeoutOrNull(SEAMLESS_READY_TIMEOUT_MS) {
                 next.awaitReady(); true
             } == true
-            next.playWhenReady = playWhenReady
-            videoVisible = ready                       // ready → gapless; timed-out → static covers buffer
-            playerViewRef.value?.player = next         // attach BEFORE releasing old → no blank frame
+            if (!tookPrebuilt) next.playWhenReady = playWhenReady
+            videoVisible = ready
+            playerViewRef.value?.player = next
             activePlayer = next
             swapped = true
             runCatching { previous.release() }
         } finally {
-            if (!swapped) runCatching { next.release() }   // superseded by a newer surf mid-wait
+            if (!swapped) runCatching { next.release() }
         }
     }
 
@@ -1351,15 +1431,13 @@ private fun ExoPlayerPlayer(
         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
     }
 
-    // Tuning static covers a buffering player (first load, or a swap that didn't finish buffering
-    // in time); it fades out the instant a video frame is on screen.
-    val tuningStaticEnabled = remember {
-        context.getSharedPreferences("playback_prefs", 0).getBoolean("static_channel_burst", true)
-    }
-    val tuningAlpha by animateFloatAsState(
-        targetValue = if (tuningStaticEnabled && !videoVisible) 1f else 0f,
-        animationSpec = tween(durationMillis = 350),
-        label = "tuningStatic",
+    // Hide the surface until the first frame renders so the user never sees a black or
+    // uninitialised decoder buffer.  The listener in frameListener sets videoVisible = true
+    // on onRenderedFirstFrame() or onIsPlayingChanged(true).
+    val surfaceAlpha by animateFloatAsState(
+        targetValue = if (videoVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 250),
+        label = "videoAlpha",
     )
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1378,22 +1456,12 @@ private fun ExoPlayerPlayer(
             },
             update = { view ->
                 view.resizeMode = resizeModeInt
-                // Minimized mini-player shows no transport controls; the full page does.
                 view.useController = controlsEnabled
                 if (!controlsEnabled) view.hideController()
                 if (view.player !== activePlayer) view.player = activePlayer
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().alpha(surfaceAlpha),
         )
-
-        // Tuning static over the buffering player — disappears as soon as video is on screen.
-        if (tuningAlpha > 0.01f) {
-            TvStatic(
-                modifier = Modifier.alpha(tuningAlpha),
-                intensity = TvStaticView.Intensity.LOW,
-                audioEnabled = false,
-            )
-        }
 
         if (!isFullscreen && controlsEnabled) {
             IconButton(

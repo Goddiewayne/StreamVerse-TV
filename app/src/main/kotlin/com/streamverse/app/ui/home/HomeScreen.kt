@@ -50,13 +50,12 @@ import com.streamverse.app.ui.components.accentColors
 import com.streamverse.app.ui.player.LocalMiniPlayerInset
 import com.streamverse.app.ui.theme.*
 import com.streamverse.core.data.repository.ProgrammeRepository
+import com.streamverse.core.domain.model.ChannelSummary
 import com.streamverse.core.domain.model.*
 import com.streamverse.core.util.CategoryNormalizer
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
-
-// ── Main Home Screen ──────────────────────────────────────────────────────────
 
 @Composable
 fun HomeScreen(
@@ -71,7 +70,7 @@ fun HomeScreen(
     val recentlyWatched by viewModel.recentlyWatched.collectAsStateWithLifecycle()
 
     val channelsByCategory = remember(state.channels) { state.channels.groupBy { it.category } }
-    val channelsByCountry = remember(state.channels) { state.channels.groupBy { it.country } }
+    val channelsByCountry = remember(state.channels) { state.channels.groupBy { it.country }.mapValues { (_, v) -> v } }
     val letterRows = remember(state.channels) { buildLetterRows(state.channels) }
 
     if (state.isLoading && state.channels.isEmpty()) {
@@ -87,11 +86,9 @@ fun HomeScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // Dynamic background
         TimeAwareBackground(
             timeOfDay = state.timeOfDay,
             featuredChannels = state.featured,
-            featuredProgrammes = state.featuredProgrammes,
         )
 
         LazyColumn(
@@ -108,229 +105,251 @@ fun HomeScreen(
                 }
             }
 
-            // 1. DYNAMIC HERO BANNER
+            // 1. Hero banner
             if (state.featured.isNotEmpty()) {
                 item(key = "hero") {
                     HeroBanner(
                         channels = state.featured,
-                        programmes = state.featuredProgrammes,
                         onChannelClick = onChannelClick,
                     )
                 }
             }
 
-            // 2. CONTINUE WATCHING
-            if (recentlyWatched.isNotEmpty()) {
-                item(key = "continue_header") {
-                    SectionHeader(title = "Continue Watching", icon = Icons.Default.History)
-                }
-                item(key = "continue_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = recentlyWatched, key = { "recent_${it.id}" }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                programme = state.featuredProgrammes.firstOrNull { it.channel.id == ch.id },
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(160.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
+            // 2. Dynamic sections from ranking engine
+            for (section in state.sections) {
+                when (section.type) {
+                    SectionType.CONTINUE_WATCHING -> {
+                        if (section.channels.isNotEmpty()) {
+                            item(key = "continue_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.History)
+                            }
+                            item(key = "continue_row") {
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    items(items = section.channels, key = { "recent_${it.id}" }) { ch ->
+                                        LiveChannelCard(
+                                            channel = ch.toSummary(),
+                                            onClick = { onChannelClick(ch.id) },
+                                            modifier = Modifier.width(160.dp),
+                                            isFavourite = favIds.contains(ch.id),
+                                            onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-            }
 
-            // 3. FEATURED LIVE EVENTS
-            if (state.liveEvents.isNotEmpty()) {
-                item(key = "events_header") {
-                    SectionHeader(title = "Live Events", icon = Icons.Default.LiveTv)
-                }
-                item(key = "events_row") {
-                    FeaturedEventsRow(
-                        events = state.liveEvents,
-                        onEventClick = { event ->
-                            event.channelIds.firstOrNull()?.let(onChannelClick)
-                        },
-                    )
-                }
-            }
-
-            // 4. ON NOW — LIVE PROGRAMME TIMELINE
-            if (state.onNow.isNotEmpty()) {
-                item(key = "onnow_header") {
-                    SectionHeader(title = "What's On Now", icon = Icons.Default.LiveTv)
-                }
-                item(key = "onnow_row") {
-                    WhatsOnNowRow(
-                        programmes = state.onNow,
-                        onChannelClick = onChannelClick,
-                    )
-                }
-            }
-
-            // 5. EDITOR'S PICKS
-            if (state.editorialPicks.isNotEmpty()) {
-                item(key = "editors_header") {
-                    SectionHeader(title = "Editor's Picks", icon = Icons.Default.Star)
-                }
-                item(key = "editors_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.editorialPicks, key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                programme = state.featuredProgrammes.firstOrNull { it.channel.id == ch.id },
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(160.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
+                    SectionType.LIVE_EVENTS -> {
+                        if (section.events.isNotEmpty()) {
+                            item(key = "events_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.LiveTv)
+                            }
+                            item(key = "events_row") {
+                                FeaturedEventsRow(
+                                    events = section.events,
+                                    onEventClick = { event ->
+                                        event.channelIds.firstOrNull()?.let(onChannelClick)
+                                    },
+                                )
+                            }
                         }
                     }
-                }
-            }
 
-            // 6. TOP NEWS
-            if (state.topNews.isNotEmpty()) {
-                item(key = "news_header") {
-                    SectionHeader(title = "Top News", icon = Icons.Default.Newspaper)
-                }
-                item(key = "news_row") {
-                    NewsCentreRow(
-                        headlines = state.headlines,
-                        programmes = state.topNews,
-                        onChannelClick = onChannelClick,
-                    )
-                }
-            }
-
-            // 7. TOP SPORTS
-            if (state.topSports.isNotEmpty()) {
-                item(key = "sports_header") {
-                    SectionHeader(title = "Top Sports", icon = Icons.Default.EmojiEvents)
-                }
-                item(key = "sports_row") {
-                    SportsCentreRow(
-                        scores = state.liveScores,
-                        programmes = state.topSports,
-                        onChannelClick = onChannelClick,
-                    )
-                }
-            }
-
-            // 8. TOP ENTERTAINMENT
-            if (state.topEntertainment.isNotEmpty()) {
-                item(key = "entertainment_header") {
-                    SectionHeader(title = "Top Entertainment", icon = Icons.Default.TheaterComedy)
-                }
-                item(key = "entertainment_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.topEntertainment, key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(160.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
+                    SectionType.TRENDING -> {
+                        if (section.trending.isNotEmpty()) {
+                            item(key = "trending_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.Whatshot)
+                            }
+                            item(key = "trending_row") {
+                                TrendingRow(
+                                    trending = section.trending,
+                                    onChannelClick = onChannelClick,
+                                    isFavourite = { favIds.contains(it) },
+                                    onToggleFavourite = viewModel::toggleFavourite,
+                                )
+                            }
                         }
                     }
-                }
-            }
 
-            // 9. TOP MOVIES
-            if (state.topMovies.isNotEmpty()) {
-                item(key = "movies_header") {
-                    SectionHeader(title = "Top Movies", icon = Icons.Default.Movie)
-                }
-                item(key = "movies_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.topMovies, key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(160.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
+                    SectionType.EDITOR_PICKS -> {
+                        if (section.channels.isNotEmpty()) {
+                            item(key = "editors_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.Star)
+                            }
+                            item(key = "editors_row") {
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    items(items = section.channels, key = { it.id }) { ch ->
+                                        LiveChannelCard(
+                                            channel = ch.toSummary(),
+                                            onClick = { onChannelClick(ch.id) },
+                                            modifier = Modifier.width(160.dp),
+                                            isFavourite = favIds.contains(ch.id),
+                                            onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-            }
 
-            // 10. TOP DOCUMENTARIES
-            if (state.topDocumentaries.isNotEmpty()) {
-                item(key = "docs_header") {
-                    SectionHeader(title = "Top Documentaries", icon = Icons.Default.Videocam)
-                }
-                item(key = "docs_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.topDocumentaries, key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(160.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
+                    SectionType.POPULAR_IN_REGION -> {
+                        if (section.channels.isNotEmpty()) {
+                            item(key = "region_popular_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.Place)
+                            }
+                            item(key = "region_popular_row") {
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    items(items = section.channels, key = { it.id }) { ch ->
+                                        LiveChannelCard(
+                                            channel = ch.toSummary(),
+                                            onClick = { onChannelClick(ch.id) },
+                                            modifier = Modifier.width(160.dp),
+                                            isFavourite = favIds.contains(ch.id),
+                                            onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-            }
 
-            // 11. TRENDING LIVE CHANNELS
-            if (state.trending.isNotEmpty()) {
-                item(key = "trending_header") {
-                    SectionHeader(title = "Trending Live", icon = Icons.Default.Whatshot)
-                }
-                item(key = "trending_row") {
-                    TrendingRow(
-                        trending = state.trending,
-                        onChannelClick = onChannelClick,
-                        isFavourite = { favIds.contains(it) },
-                        onToggleFavourite = viewModel::toggleFavourite,
-                    )
-                }
-            }
-
-            // 12. POPULAR IN YOUR REGION
-            if (state.popularInRegion.isNotEmpty()) {
-                item(key = "region_popular_header") {
-                    SectionHeader(title = "Popular in Your Region", icon = Icons.Default.Place)
-                }
-                item(key = "region_popular_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.popularInRegion, key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(160.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
+                    SectionType.TOP_NEWS -> {
+                        if (section.programmes.isNotEmpty() || section.headlines.isNotEmpty()) {
+                            item(key = "news_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.Newspaper)
+                            }
+                            item(key = "news_row") {
+                                NewsCentreRow(
+                                    headlines = section.headlines,
+                                    programmes = section.programmes,
+                                    onChannelClick = onChannelClick,
+                                )
+                            }
                         }
                     }
+
+                    SectionType.TOP_SPORTS -> {
+                        if (section.programmes.isNotEmpty()) {
+                            item(key = "sports_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.EmojiEvents)
+                            }
+                            item(key = "sports_row") {
+                                SportsCentreRow(
+                                    scores = section.scores,
+                                    programmes = section.programmes,
+                                    onChannelClick = onChannelClick,
+                                )
+                            }
+                        }
+                    }
+
+                    SectionType.BECAUSE_YOU_WATCH,
+                    SectionType.POPULAR_WORLDWIDE,
+                    SectionType.TOP_ENTERTAINMENT,
+                    SectionType.TOP_MOVIES,
+                    SectionType.TOP_DOCUMENTARIES,
+                    SectionType.KIDS,
+                    SectionType.MUSIC,
+                    SectionType.RECOMMENDATIONS -> {
+                        if (section.channels.isNotEmpty()) {
+                            val icon = when (section.type) {
+                                SectionType.BECAUSE_YOU_WATCH -> Icons.Default.Visibility
+                                SectionType.POPULAR_WORLDWIDE -> Icons.Default.Language
+                                SectionType.TOP_ENTERTAINMENT -> Icons.Default.TheaterComedy
+                                SectionType.TOP_MOVIES -> Icons.Default.Movie
+                                SectionType.TOP_DOCUMENTARIES -> Icons.Default.Videocam
+                                SectionType.KIDS -> Icons.Default.Face
+                                SectionType.MUSIC -> Icons.Default.MusicNote
+                                SectionType.RECOMMENDATIONS -> Icons.Default.AutoAwesome
+                                else -> null
+                            }
+                            item(key = "${section.id}_header") {
+                                SectionHeader(title = section.title, icon = icon)
+                            }
+                            item(key = "${section.id}_row") {
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                items(items = section.channels, key = { it.id }) { ch ->
+                                        LiveChannelCard(
+                                            channel = ch.toSummary(),
+                                            onClick = { onChannelClick(ch.id) },
+                                            modifier = Modifier.width(160.dp),
+                                            isFavourite = favIds.contains(ch.id),
+                                            onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SectionType.RECENTLY_ADDED -> {
+                        if (section.channels.isNotEmpty()) {
+                            item(key = "new_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.NewReleases)
+                            }
+                            item(key = "new_row") {
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    items(items = section.channels, key = { it.id }) { ch ->
+                                        LiveChannelCard(
+                                            channel = ch.toSummary(),
+                                            onClick = { onChannelClick(ch.id) },
+                                            modifier = Modifier.width(140.dp),
+                                            isFavourite = favIds.contains(ch.id),
+                                            onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
+                                            isNew = true,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SectionType.FAVOURITES -> {
+                        if (section.channels.isNotEmpty()) {
+                            item(key = "favourites_header") {
+                                SectionHeader(title = section.title, icon = Icons.Default.Favorite)
+                            }
+                            item(key = "favourites_row") {
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    items(items = section.channels, key = { it.id }) { ch ->
+                                        LiveChannelCard(
+                                            channel = ch.toSummary(),
+                                            onClick = { onChannelClick(ch.id) },
+                                            modifier = Modifier.width(140.dp),
+                                            isFavourite = true,
+                                            onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SectionType.HERO_BANNER -> {}
+                    SectionType.CATEGORY_BROWSING -> {}
+                    else -> {}
                 }
             }
 
-            // 13. TV GUIDE — premium full guide with real EPG data
+            // TV Guide entry
             item(key = "guide_header") {
                 SectionHeader(title = "TV Guide", icon = Icons.Default.Schedule)
             }
@@ -338,181 +357,7 @@ fun HomeScreen(
                 TvGuideEntry(onGuideClick = onGuideClick)
             }
 
-            // 14. POPULAR WORLDWIDE
-            if (state.popularWorldwide.isNotEmpty()) {
-                item(key = "global_header") {
-                    SectionHeader(title = "Popular Worldwide", icon = Icons.Default.Language)
-                }
-                item(key = "global_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.popularWorldwide, key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(160.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 15. KIDS
-            if (state.kidsChannels.isNotEmpty()) {
-                item(key = "kids_header") {
-                    SectionHeader(title = "Kids", icon = Icons.Default.Face)
-                }
-                item(key = "kids_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.kidsChannels.take(15), key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(140.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 16. MUSIC
-            if (state.musicChannels.isNotEmpty()) {
-                item(key = "music_header") {
-                    SectionHeader(title = "Music", icon = Icons.Default.MusicNote)
-                }
-                item(key = "music_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.musicChannels.take(15), key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(140.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 17. RECENTLY ADDED
-            if (state.recentlyAdded.isNotEmpty()) {
-                item(key = "new_header") {
-                    SectionHeader(title = "Recently Added", icon = Icons.Default.NewReleases)
-                }
-                item(key = "new_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.recentlyAdded.take(15), key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(140.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                                isNew = true,
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 18. REGIONAL HUB
-            if (state.regionalChannels.isNotEmpty()) {
-                item(key = "regional_header") {
-                    SectionHeader(title = "Regional TV", icon = Icons.Default.Public)
-                }
-                for ((region, chs) in state.regionalChannels.entries.take(8)) {
-                    item(key = "region_${region}_header") {
-                        SectionHeaderWithSeeAll(
-                            title = region,
-                            count = chs.size,
-                            onSeeAll = { onSeeAllClick("region", region) },
-                        )
-                    }
-                    item(key = "region_${region}_row") {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(items = chs.take(10), key = { it.id }) { ch ->
-                                LiveChannelCard(
-                                    channel = ch,
-                                    onClick = { onChannelClick(ch.id) },
-                                    modifier = Modifier.width(140.dp),
-                                    isFavourite = favIds.contains(ch.id),
-                                    onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 19. FAVOURITES
-            val favChannels = state.channels.filter { favIds.contains(it.id) }
-            if (favChannels.isNotEmpty()) {
-                item(key = "favourites_header") {
-                    SectionHeader(title = "My Favourites", icon = Icons.Default.Favorite)
-                }
-                item(key = "favourites_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = favChannels.take(20), key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                programme = state.featuredProgrammes.firstOrNull { it.channel.id == ch.id },
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(140.dp),
-                                isFavourite = true,
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 20. RECOMMENDATIONS
-            if (state.recommendations.isNotEmpty()) {
-                item(key = "recs_header") {
-                    SectionHeader(title = "Recommended For You", icon = Icons.Default.AutoAwesome)
-                }
-                item(key = "recs_row") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(items = state.recommendations.take(15), key = { it.id }) { ch ->
-                            LiveChannelCard(
-                                channel = ch,
-                                programme = state.featuredProgrammes.firstOrNull { it.channel.id == ch.id },
-                                onClick = { onChannelClick(ch.id) },
-                                modifier = Modifier.width(140.dp),
-                                isFavourite = favIds.contains(ch.id),
-                                onToggleFavourite = { viewModel.toggleFavourite(ch) },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 21. CATEGORY BROWSING
+            // Category/Region/Alphabetical browsing
             when (state.sortMode) {
                 SortMode.ALPHABETICAL -> {
                     for ((label, chs) in letterRows) {
@@ -530,7 +375,7 @@ fun HomeScreen(
                                         channel = ch, onClick = { onChannelClick(ch.id) },
                                         modifier = Modifier.width(140.dp),
                                         isFavourite = favIds.contains(ch.id),
-                                        onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                                        onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
                                     )
                                 }
                             }
@@ -544,7 +389,7 @@ fun HomeScreen(
                         SortMode.REGION -> state.categories
                         else -> emptyList()
                     }
-                    val sectionChannels: (String) -> List<Channel> = when (state.sortMode) {
+                    val sectionChannels: (String) -> List<ChannelSummary> = when (state.sortMode) {
                         SortMode.CATEGORY -> { s -> channelsByCategory[s] ?: emptyList() }
                         SortMode.REGION -> { s ->
                             if (s == "All Regions") state.channels
@@ -572,7 +417,7 @@ fun HomeScreen(
                                             channel = ch, onClick = { onChannelClick(ch.id) },
                                             modifier = Modifier.width(140.dp),
                                             isFavourite = favIds.contains(ch.id),
-                                            onToggleFavourite = { viewModel.toggleFavourite(ch) },
+                                            onToggleFavourite = { viewModel.toggleFavourite(ch.id) },
                                         )
                                     }
                                 }
@@ -583,7 +428,7 @@ fun HomeScreen(
                 }
             }
 
-            // 22. RADIO
+            // Radio
             val radioChannels = channelsByCategory[CategoryNormalizer.C.RADIO] ?: emptyList()
             if (radioChannels.isNotEmpty()) {
                 item(key = "radio_header") {
@@ -600,7 +445,7 @@ fun HomeScreen(
                                 channel = ch, onClick = { onChannelClick(ch.id) },
                                 modifier = Modifier.width(140.dp),
                                 isFavorite = favIds.contains(ch.id),
-                                onToggleFavorite = { viewModel.toggleFavourite(ch) },
+                                onToggleFavorite = { viewModel.toggleFavourite(ch.id) },
                             )
                         }
                     }
@@ -618,7 +463,6 @@ fun HomeScreen(
 @Composable
 private fun HeroBanner(
     channels: List<Channel>,
-    programmes: List<ChannelProgramme>,
     onChannelClick: (String) -> Unit,
 ) {
     val pagerState = rememberPagerState(pageCount = { channels.size.coerceAtLeast(1) })
@@ -642,11 +486,9 @@ private fun HeroBanner(
             beyondViewportPageCount = 1,
         ) { page ->
             val ch = channels.getOrNull(page) ?: return@HorizontalPager
-            val prog = programmes.getOrNull(page)
-            HeroCard(channel = ch, programme = prog, onClick = { onChannelClick(ch.id) })
+            HeroCard(channel = ch, onClick = { onChannelClick(ch.id) })
         }
 
-        // Channel indicator bar
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -673,7 +515,6 @@ private fun HeroBanner(
 @Composable
 private fun HeroCard(
     channel: Channel,
-    programme: ChannelProgramme?,
     onClick: () -> Unit,
 ) {
     val (c1, c2) = accentColors(channel.displayName)
@@ -690,7 +531,6 @@ private fun HeroCard(
                 onClick = onClick,
             ),
     ) {
-        // Background artwork
         Box(
             Modifier.fillMaxSize()
                 .background(Brush.linearGradient(listOf(c1.copy(alpha = 0.6f), c2.copy(alpha = 0.6f)))),
@@ -701,26 +541,22 @@ private fun HeroCard(
             logoPadding = 0.dp,
         )
 
-        // Scrim overlays
         Box(Modifier.matchParentSize().background(
             Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.4f), Color.Transparent, Color.Black.copy(alpha = 0.85f)))
         ))
 
-        // Gradient accent bar at top
         Box(
             Modifier.fillMaxWidth().height(3.dp)
                 .align(Alignment.TopCenter)
                 .background(c1),
         )
 
-        // Content
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 20.dp),
         ) {
-            // Category + Live badge
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -749,64 +585,25 @@ private fun HeroCard(
                 overflow = TextOverflow.Ellipsis,
             )
 
-            // Programme info
-            programme?.currentProgramme?.let { p ->
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = p.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.9f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                p.synopsis?.let { syn ->
-                    if (syn.isNotBlank()) {
-                        Text(
-                            text = syn,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.White.copy(alpha = 0.6f),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-
-                // Progress bar
-                ProgrammeProgressBar(progress = p.progressFraction, accent = c1)
-
-                // Row: time remaining & next programme
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val remMin = (p.remainingMillis / 60_000).toInt()
+            channel.description?.let { desc ->
+                if (desc.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "${remMin}m remaining",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.7f),
+                        text = desc,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.6f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    programme.nextProgramme?.let { next ->
-                        Text(
-                            text = "Up Next: ${next.title}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = c1,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                 }
             }
 
             Spacer(Modifier.height(12.dp))
 
-            // Meta row
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Watch Now button
                 Box(
                     Modifier
                         .clip(RoundedCornerShape(6.dp))
@@ -821,7 +618,6 @@ private fun HeroCard(
                         fontSize = 13.sp,
                     )
                 }
-                // Channel info
                 channel.country?.let { Text(it, color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp) }
                 channel.language?.let { Text(it, color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp) }
             }
@@ -847,23 +643,15 @@ private fun HeroLiveBadge() {
     }
 }
 
-@Composable
-private fun ProgrammeProgressBar(progress: Float, accent: Color) {
-    Box(Modifier.fillMaxWidth().height(2.dp).clip(RoundedCornerShape(1.dp)).background(Color.White.copy(alpha = 0.2f))) {
-        Box(Modifier.fillMaxWidth(fraction = progress.coerceIn(0f, 1f)).fillMaxHeight().background(accent))
-    }
-}
-
-// ── 2. LIVE CHANNEL CARD (with programme overlay) ────────────────────────────
+// ── 2. LIVE CHANNEL CARD (no EPG programme overlay) ───────────────────────────
 
 @Composable
 private fun LiveChannelCard(
-    channel: Channel,
-    programme: ChannelProgramme? = null,
+    channel: ChannelSummary,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     isFavourite: Boolean = false,
-    onToggleFavourite: ((Channel) -> Unit)? = null,
+    onToggleFavourite: (() -> Unit)? = null,
     isNew: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -889,29 +677,7 @@ private fun LiveChannelCard(
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color(0xFF0A0A0A))) {
             ChannelLogo(channel = channel, modifier = Modifier.matchParentSize())
 
-            // Programme overlay at bottom
-            programme?.currentProgramme?.let { p ->
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f)))
-                        )
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                ) {
-                    Column {
-                        Text(
-                            p.title, color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                        ProgrammeProgressBar(progress = p.progressFraction, accent = CyberCyan)
-                    }
-                }
-            }
-
-            // Badges
+            // Badges row
             Row(
                 Modifier.align(Alignment.TopStart).padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -932,10 +698,9 @@ private fun LiveChannelCard(
                 }
             }
 
-            // Favourite
             if (onToggleFavourite != null) {
                 IconButton(
-                    onClick = { onToggleFavourite(channel) },
+                    onClick = onToggleFavourite,
                     modifier = Modifier.align(Alignment.TopEnd).size(28.dp),
                 ) {
                     Icon(
@@ -959,6 +724,37 @@ private fun LiveChannelCard(
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Default.PlayArrow, null, tint = Color.Black, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+
+            // Channel info overlay at bottom
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .background(
+                        Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f)))
+                    )
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+                Column {
+                    channel.category?.let { cat ->
+                        Text(
+                            cat, color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        channel.country?.let {
+                            Text(it, color = Color.White.copy(alpha = 0.5f), fontSize = 8.sp)
+                        }
+                        channel.language?.let {
+                            Text(it, color = Color.White.copy(alpha = 0.5f), fontSize = 8.sp)
+                        }
                     }
                 }
             }
@@ -1027,7 +823,6 @@ private fun EventCard(event: LiveEvent, onClick: () -> Unit) {
                 }
             }
 
-            // Status badge
             Box(
                 Modifier.align(Alignment.TopStart).padding(6.dp)
                     .clip(RoundedCornerShape(4.dp))
@@ -1040,7 +835,6 @@ private fun EventCard(event: LiveEvent, onClick: () -> Unit) {
                 )
             }
 
-            // Content
             Column(
                 Modifier.align(Alignment.BottomStart).padding(10.dp),
             ) {
@@ -1086,79 +880,7 @@ private fun eventColor(type: EventType): Pair<Color, Color> = when (type) {
     EventType.GENERAL -> Color(0xFF64748B) to Color(0xFF475569)
 }
 
-// ── 4. WHAT'S ON NOW ROW ─────────────────────────────────────────────────────
-
-@Composable
-private fun WhatsOnNowRow(
-    programmes: List<ChannelProgramme>,
-    onChannelClick: (String) -> Unit,
-) {
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        items(items = programmes.take(15), key = { it.channel.id }) { cp ->
-            OnNowCard(cp = cp, onClick = { onChannelClick(cp.channel.id) })
-        }
-    }
-}
-
-@Composable
-private fun OnNowCard(cp: ChannelProgramme, onClick: () -> Unit) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isFocused by interactionSource.collectIsFocusedAsState()
-
-    Card(
-        modifier = Modifier.width(200.dp),
-        shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(containerColor = NavyCard),
-        interactionSource = interactionSource,
-        onClick = onClick,
-    ) {
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color(0xFF0A0A0A))) {
-            ChannelLogo(channel = cp.channel, modifier = Modifier.matchParentSize())
-
-            if (cp.channel.id in LocalLiveChannels.current) {
-                Box(
-                    Modifier.align(Alignment.TopStart).padding(6.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFFFF3B30))
-                        .padding(horizontal = 5.dp, vertical = 2.dp),
-                ) {
-                    Text("LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 9.sp)
-                }
-            }
-
-            cp.currentProgramme?.let { p ->
-                Box(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .background(Color.Black.copy(alpha = 0.8f))
-                        .padding(8.dp),
-                ) {
-                    Column {
-                        Text(p.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(4.dp))
-                        ProgrammeProgressBar(progress = p.progressFraction, accent = CyberCyan)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "${(p.remainingMillis / 60_000).toInt()}m left",
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = 9.sp,
-                        )
-                    }
-                }
-            }
-        }
-        Text(
-            cp.channel.displayName,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp),
-            color = Color(0xFFCCCCCC), fontWeight = FontWeight.SemiBold,
-            fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-// ── 5. NEWS CENTRE ROW ───────────────────────────────────────────────────────
+// ── 4. NEWS CENTRE ROW ───────────────────────────────────────────────────────
 
 @Composable
 private fun NewsCentreRow(
@@ -1170,13 +892,11 @@ private fun NewsCentreRow(
         contentPadding = PaddingValues(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Breaking headlines
         items(items = headlines.take(5), key = { it.id }) { hl ->
             NewsHeadlineCard(headline = hl, onClick = {
                 hl.channelId?.let(onChannelClick)
             })
         }
-        // Live news channels
         items(items = programmes.take(4), key = { "news_${it.channel.id}" }) { cp ->
             OnNowCard(cp = cp, onClick = { onChannelClick(cp.channel.id) })
         }
@@ -1225,7 +945,42 @@ private fun NewsHeadlineCard(headline: NewsHeadline, onClick: () -> Unit) {
     }
 }
 
-// ── 6. SPORTS CENTRE ROW ─────────────────────────────────────────────────────
+@Composable
+private fun OnNowCard(cp: ChannelProgramme, onClick: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    Card(
+        modifier = Modifier.width(200.dp),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = NavyCard),
+        interactionSource = interactionSource,
+        onClick = onClick,
+    ) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color(0xFF0A0A0A))) {
+            ChannelLogo(channel = cp.channel, modifier = Modifier.matchParentSize())
+
+            if (cp.channel.id in LocalLiveChannels.current) {
+                Box(
+                    Modifier.align(Alignment.TopStart).padding(6.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFFFF3B30))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                ) {
+                    Text("LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 9.sp)
+                }
+            }
+        }
+        Text(
+            cp.channel.displayName,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp),
+            color = Color(0xFFCCCCCC), fontWeight = FontWeight.SemiBold,
+            fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+// ── 5. SPORTS CENTRE ROW ─────────────────────────────────────────────────────
 
 @Composable
 private fun SportsCentreRow(
@@ -1282,14 +1037,14 @@ private fun LiveScoreCard(score: LiveScore) {
     }
 }
 
-// ── 7. TRENDING ROW ──────────────────────────────────────────────────────────
+// ── 6. TRENDING ROW ──────────────────────────────────────────────────────────
 
 @Composable
 private fun TrendingRow(
     trending: List<TrendingChannel>,
     onChannelClick: (String) -> Unit,
     isFavourite: (String) -> Boolean,
-    onToggleFavourite: (Channel) -> Unit,
+    onToggleFavourite: (String) -> Unit,
 ) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp),
@@ -1299,7 +1054,7 @@ private fun TrendingRow(
             TrendingCard(
                 trending = tc,
                 isFavourite = isFavourite(tc.channel.id),
-                onToggleFavourite = { onToggleFavourite(tc.channel) },
+                onToggleFavourite = { onToggleFavourite(tc.channel.id) },
                 onClick = { onChannelClick(tc.channel.id) },
             )
         }
@@ -1323,7 +1078,6 @@ private fun TrendingCard(
     ) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color(0xFF0A0A0A))) {
             ChannelLogo(channel = trending.channel, modifier = Modifier.matchParentSize())
-            // Rank badge
             Box(
                 Modifier.align(Alignment.TopStart).padding(4.dp)
                     .clip(RoundedCornerShape(4.dp))
@@ -1340,7 +1094,7 @@ private fun TrendingCard(
     }
 }
 
-// ── 8. TV GUIDE ENTRY ────────────────────────────────────────────────────────
+// ── 7. TV GUIDE ENTRY ────────────────────────────────────────────────────────
 
 @Composable
 private fun TvGuideEntry(onGuideClick: () -> Unit) {
@@ -1400,12 +1154,11 @@ private fun TvGuideEntry(onGuideClick: () -> Unit) {
 private fun TimeAwareBackground(
     timeOfDay: TimeOfDay,
     featuredChannels: List<Channel>,
-    featuredProgrammes: List<ChannelProgramme>,
 ) {
     val accent = Color(timeOfDay.accentColor)
-    val dominantColor = remember(featuredChannels, featuredProgrammes) {
-        featuredProgrammes.firstOrNull()?.let { cp ->
-            val (c1, _) = accentColors(cp.channel.displayName)
+    val dominantColor = remember(featuredChannels) {
+        featuredChannels.firstOrNull()?.let { ch ->
+            val (c1, _) = accentColors(ch.displayName)
             c1
         } ?: accent
     }
@@ -1469,7 +1222,41 @@ private fun PremiumTopBar(timeOfDay: TimeOfDay, onSearchClick: () -> Unit) {
 // ── SHARED COMPONENTS ─────────────────────────────────────────────────────────
 
 @Composable
-private fun SectionHeader(title: String, icon: ImageVector? = null) {
+private fun SortChipRow(currentSort: SortMode, onSortSelected: (SortMode) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SortMode.entries.forEach { mode ->
+            val selected = currentSort == mode
+            val bgColor = if (selected) Color(0xFF22D3EE) else Color(0xFF1E293B)
+            val textColor = if (selected) Color.Black else Color(0xFF94A3B8)
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(bgColor)
+                    .clickable { onSortSelected(mode) }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    when (mode) {
+                        SortMode.CATEGORY -> "Category"
+                        SortMode.ALPHABETICAL -> "A-Z"
+                        SortMode.REGION -> "Region"
+                    },
+                    color = textColor,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SectionHeader(title: String, icon: ImageVector? = null) {
     Row(
         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 22.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1498,92 +1285,68 @@ private fun SectionHeaderWithSeeAll(title: String, count: Int, onSeeAll: () -> U
             title, style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold, color = Color.White,
             modifier = Modifier.weight(1f).semantics { heading() },
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
         Text(
-            "See All", style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold, color = Color(0xFF999999),
-            modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = onSeeAll)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
+            "$count channels",
+            color = Color.White.copy(alpha = 0.5f),
+            fontSize = 11.sp,
         )
-    }
-}
-
-@Composable
-private fun SortChipRow(currentSort: SortMode, onSortSelected: (SortMode) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        SortMode.entries.forEach { mode ->
-            val selected = mode == currentSort
-            Box(
-                Modifier.clip(RoundedCornerShape(4.dp))
-                    .background(if (selected) Color.White else Color.White.copy(alpha = 0.1f))
-                    .clickable { onSortSelected(mode) }
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    mode.displayName,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                    color = if (selected) Color.Black else Color(0xFF999999),
-                    fontSize = 11.sp,
-                )
-            }
+        TextButton(onClick = onSeeAll) {
+            Text("See All", color = Color(0xFF22D3EE), fontSize = 12.sp)
         }
     }
 }
 
 @Composable
 private fun ErrorScreen(message: String, onRetry: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Could not connect", style = MaterialTheme.typography.titleMedium, color = Color.White)
-            Text(message, style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
-            Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = Color.White)) {
-                Icon(Icons.Default.Refresh, null, tint = Color.Black)
-                Spacer(Modifier.width(6.dp))
-                Text("Retry", color = Color.Black, fontWeight = FontWeight.Bold)
-            }
+    Column(
+        Modifier.fillMaxSize().background(Color.Black).padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.Default.Warning, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(48.dp))
+        Spacer(Modifier.height(16.dp))
+        Text("Something went wrong", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        Spacer(Modifier.height(8.dp))
+        Text(message, color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(24.dp))
+        Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22D3EE))) {
+            Text("Retry", color = Color.Black, fontWeight = FontWeight.Bold)
         }
     }
 }
 
 // ── UTILITY FUNCTIONS ─────────────────────────────────────────────────────────
 
-private fun buildLetterRows(channels: List<Channel>): List<Pair<String, List<Channel>>> = buildList {
-    val digitCh = channels.filter { ch ->
-        val first = ch.displayName.lowercase().firstOrNull()
-        first != null && first in '0'..'9'
+private fun buildLetterRows(channels: List<ChannelSummary>): List<Pair<String, List<ChannelSummary>>> {
+    if (channels.isEmpty()) return emptyList()
+    val grouped = channels.groupBy { it.displayName.first().uppercase() }
+    val order = listOf("0-9") + ('A'..'Z').map { it.toString() }
+    return order.mapNotNull { letter ->
+        val chs = when (letter) {
+            "0-9" -> grouped.filterKeys { it[0].isDigit() }.values.flatten()
+            else -> grouped[letter] ?: return@mapNotNull null
+        }.ifEmpty { return@mapNotNull null }
+        letter to chs
     }
-    if (digitCh.isNotEmpty()) add("0-9" to digitCh)
-    for (letter in 'A'..'Z') {
-        val lc = letter.lowercase()[0]
-        val lcCh = channels.filter { ch ->
-            val first = ch.displayName.lowercase().firstOrNull()
-            first != null && first == lc
-        }
-        if (lcCh.isNotEmpty()) add(letter.toString() to lcCh)
+}
+
+private fun formatTimestamp(ts: Long): String {
+    val diff = System.currentTimeMillis() - ts
+    val mins = diff / 60_000
+    return when {
+        mins < 1 -> "Just now"
+        mins < 60 -> "${mins}m ago"
+        mins < 1440 -> "${mins / 60}h ago"
+        else -> "${mins / 1440}d ago"
     }
 }
 
 private fun formatCountdown(ms: Long): String {
-    val totalSec = (ms / 1000).toInt()
-    if (totalSec <= 0) return "Starting..."
-    val h = totalSec / 3600
-    val m = (totalSec % 3600) / 60
-    return if (h > 0) "${h}h ${m}m" else "${m}m"
-}
-
-private fun formatTimestamp(ms: Long): String {
-    val diff = System.currentTimeMillis() - ms
-    val min = (diff / 60_000).toInt()
-    return when {
-        min < 1 -> "Just now"
-        min < 60 -> "${min}m ago"
-        min < 1440 -> "${min / 60}h ago"
-        else -> "${min / 1440}d ago"
-    }
+    if (ms <= 0) return "Now"
+    val mins = ms / 60_000
+    if (mins < 60) return "${mins}m"
+    val hrs = mins / 60
+    val remMins = mins % 60
+    return "${hrs}h ${remMins}m"
 }

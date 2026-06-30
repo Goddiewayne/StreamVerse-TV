@@ -6,34 +6,28 @@ import androidx.media3.exoplayer.DefaultLoadControl
  * Live-TV–optimised ExoPlayer [DefaultLoadControl], tuned for **fast start AND resilience on
  * poor connectivity**.
  *
- * Two competing goals, reconciled:
- *  1. Start instantly — `bufferForPlaybackMs = 500 ms` emits the first frame almost immediately
- *     (vs ExoPlayer's 2 500 ms default), so channels open in a blink even on a slow link.
- *  2. Never stall once playing — a deep `maxBufferMs = 60 s` reserve plus
- *     `prioritizeTimeOverSizeThresholds` lets the player race ahead and bank as much video as
- *     bandwidth allows, riding straight through dropouts and congestion.
+ * When [dataSaver] is `true`, buffer durations are halved to reduce pre‑buffered video data —
+ * ideal for users on metered / capped connections who want to minimise consumption per zap.
  *
- *  Setting                          Default     StreamVerse   Why
- *  ──────────────────────────────── ────────    ───────────   ─────────────────────────────────
- *  bufferForPlaybackMs              2 500       500           near-instant first frame
- *  bufferForPlaybackAfterRebuffer   5 000       2 000         quick recovery, but settled
- *  minBufferMs (resume re-fill at)  50 000      15 000        keep a healthy floor of reserve
- *  maxBufferMs (bank ahead up to)   50 000      60 000        ride out long dropouts on weak data
- *  back-buffer                      0           30 000        instant seek-back / rejoin
- *
- * `prioritizeTimeOverSizeThresholds(true)` makes buffering decisions by playback duration rather
- * than byte count — the right call for low-bitrate streams where bytes are scarce but seconds
- * are what matter.
+ * Setting                                Normal      Data‑Saver   Why
+ * ────────────────────────────────────── ───────     ──────────   ─────────────────────────────────
+ * bufferForPlaybackMs                      500         250        near-instant first frame (even)
+ * bufferForPlaybackAfterRebuffer         2 000       1 000       quick recovery, but settled
+ * minBufferMs (resume re-fill at)       15 000       5 000       keep a healthy floor, but smaller
+ * maxBufferMs (bank ahead up to)        60 000      15 000       ride out dropouts, but cap waste
  */
 object StreamLoadControl {
-    fun build(): DefaultLoadControl = DefaultLoadControl.Builder()
+    fun build(dataSaver: Boolean = false): DefaultLoadControl = DefaultLoadControl.Builder()
         .setBufferDurationsMs(
-            /* minBufferMs                    = */ 15_000,
-            /* maxBufferMs                    = */ 60_000,
-            /* bufferForPlaybackMs            = */ 500,
-            /* bufferForPlaybackAfterRebufferMs= */ 2_000,
+            /* minBufferMs                    = */ if (dataSaver) 5_000 else 15_000,
+            /* maxBufferMs                    = */ if (dataSaver) 15_000 else 60_000,
+            /* bufferForPlaybackMs            = */ if (dataSaver) 250 else 500,
+            /* bufferForPlaybackAfterRebufferMs= */ if (dataSaver) 1_000 else 2_000,
         )
         .setPrioritizeTimeOverSizeThresholds(true)
-        .setBackBuffer(/* backBufferDurationMs = */ 30_000, /* retainBackBufferFromKeyframe = */ true)
+        .setBackBuffer(
+            /* backBufferDurationMs = */ if (dataSaver) 10_000 else 30_000,
+            /* retainBackBufferFromKeyframe = */ true,
+        )
         .build()
 }

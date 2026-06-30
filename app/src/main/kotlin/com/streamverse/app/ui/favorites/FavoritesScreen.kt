@@ -94,12 +94,12 @@ fun FavoritesScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(state.channels, key = { it.id }) { channel ->
+                    items(state.channels, key = { it.id }) { ch ->
                         ChannelCard(
-                            channel = channel,
-                            onClick = { onChannelClick(channel.id) },
-                            isFavorite = favIds.contains(channel.id),
-                            onToggleFavorite = { viewModel.removeFavorite(channel.id) },
+                            channel = ch,
+                            onClick = { onChannelClick(ch.id) },
+                            isFavorite = favIds.contains(ch.id),
+                            onToggleFavorite = { viewModel.removeFavorite(ch.id) },
                         )
                     }
                 }

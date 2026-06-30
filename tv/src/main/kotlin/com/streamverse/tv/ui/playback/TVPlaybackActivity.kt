@@ -9,6 +9,13 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -39,6 +46,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.ChannelNavigationEngine
+import com.streamverse.core.data.PlaybackSessionManager
 import com.streamverse.core.data.PlaybackStateMachine
 import com.streamverse.core.data.SourceHealth
 import com.streamverse.core.data.SourceHealthState
@@ -48,6 +56,7 @@ import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.numberedDisplayName
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.domain.model.SourceType
+import com.streamverse.core.util.SourceResolutionEngine
 import com.streamverse.core.util.SourceSelector
 import com.streamverse.core.util.StreamInfo
 import com.streamverse.core.util.StreamLoadControl
@@ -55,6 +64,8 @@ import com.streamverse.core.util.StreamPreResolver
 import com.streamverse.core.util.StreamResolver
 import com.streamverse.core.util.StreamTrackSelector
 import com.streamverse.tv.R
+import com.streamverse.core.util.AdBlocker
+import java.util.concurrent.atomic.AtomicBoolean
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -85,6 +96,8 @@ class TVPlaybackActivity : ComponentActivity() {
     @Inject lateinit var navigationEngine: ChannelNavigationEngine
     @Inject lateinit var channelHealthEngine: ChannelHealthEngine
     @Inject lateinit var sourceSelector: SourceSelector
+    @Inject lateinit var sessionManager: PlaybackSessionManager
+    @Inject lateinit var sourceResolutionEngine: SourceResolutionEngine
 
     private val stateMachine = PlaybackStateMachine()
 
@@ -134,6 +147,9 @@ class TVPlaybackActivity : ComponentActivity() {
     private var sourceBarActive = false
     private var pendingSourceIndex = 0
     private var healthJob: kotlinx.coroutines.Job? = null
+    // Visible WebView fallback — swapped in when no direct/browser-extracted stream is available
+    // (e.g. YouTube embed).  Cleared on every tuneToChannel call.
+    private var webViewPlaceholder: WebView? = null
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val hideOverlaysRunnable = Runnable { hideOverlays() }
@@ -164,6 +180,19 @@ class TVPlaybackActivity : ComponentActivity() {
         tryNextSource()
     }
     private val connectTimeoutMs = 25_000L
+
+    // ── Validation recovery ────────────────────────────────────────────────────────────
+    // If a manually selected source fails validation within this timeout, auto-recover
+    // to the default verified source.
+    private val validationRecoveryRunnable = Runnable { validationRecoveryFire() }
+    private val validationTimeoutMs = 15_000L
+    private fun validationRecoveryFire() {
+        if (sessionManager.getSelectionMode() == PlaybackSessionManager.SourceSelectionMode.MANUAL &&
+            !sessionManager.isSourceValidated()) {
+            android.util.Log.w("TVPlayback", "validation recovery: manual source failed, recovering to default")
+            recoverToDefault()
+        }
+    }
 
     // ── Live channel surfing ("zapping") ─────────────────────────────────────────────
     // D-Pad ↑/↓ flips through this list in-place, like a real TV remote.  Built from the
@@ -250,8 +279,9 @@ class TVPlaybackActivity : ComponentActivity() {
             // Persist to "Continue Watching" — same SharedPreferences that TVBrowseFragment reads
             recordWatchHistory(channelId)
             buildSourceChips(ch)
-            // Use SourceSelector for intelligent default source selection
-            val selection = sourceSelector.selectBestSource(ch)
+            // Intelligent default: use verified-playable source first, then fallback.
+            val selection = sourceSelector.selectDefaultVerifiedSource(ch)
+            sessionManager.startSession(ch, selection.type)
             val startIdx = sourceOptions.indexOfFirst { it.first == selection.type }.coerceAtLeast(0)
             observeSourceHealth(channelId)
             playFromIndex(startIdx)
@@ -265,6 +295,7 @@ class TVPlaybackActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        removeWebViewPlaceholder()
         healthJob?.cancel()
         handler.removeCallbacksAndMessages(null)
         mediaSession?.release()
@@ -277,6 +308,7 @@ class TVPlaybackActivity : ComponentActivity() {
         pendingPreloadChannel = null
         playerView.player = null
         stateMachine.reset()
+        sessionManager.clearSession()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
@@ -459,11 +491,13 @@ class TVPlaybackActivity : ComponentActivity() {
      */
     private fun requestTune(target: Channel) {
         if (target.id == channel?.id) return
+        removeWebViewPlaceholder()
         channel = target
         selectedType = null
         sourceOptions = buildSourceOptions(target)
         if (sourceOptions.isEmpty()) { showStaticInternal("This channel isn't available on TV yet"); return }
-        val selection = sourceSelector.selectBestSource(target)
+        val selection = sourceSelector.selectDefaultVerifiedSource(target)
+        sessionManager.startSession(target, selection.type)
         currentOptionIndex = sourceOptions.indexOfFirst { it.first == selection.type }.coerceAtLeast(0)
         observeSourceHealth(target.id)
         zapIndex = zapChannels.indexOfFirst { it.id == target.id }.coerceAtLeast(0)
@@ -489,6 +523,7 @@ class TVPlaybackActivity : ComponentActivity() {
      *  quickly past channels doesn't spin up a player for each one. */
     private fun schedulePreload(target: Channel) {
         if (target.id == channel?.id) return
+        if (sourcePreferences.isDataSaverEnabled()) return
         pendingPreloadChannel = target
         handler.removeCallbacks(preloadRunnable)
         handler.postDelayed(preloadRunnable, PRELOAD_DEBOUNCE_MS)
@@ -501,6 +536,7 @@ class TVPlaybackActivity : ComponentActivity() {
      */
     private fun preloadChannel(target: Channel) {
         if (target.id == channel?.id) return
+        if (sourcePreferences.isDataSaverEnabled()) return  // no pre-buffering on metered
         if (nextPlayer != null && nextPlayerChannelId == target.id) return  // already preloading it
         val selection = sourceSelector.selectBestSource(target)
         val type = sourceOptions.firstOrNull { it.first == selection.type }?.first
@@ -511,12 +547,12 @@ class TVPlaybackActivity : ComponentActivity() {
         nextPlayerType = type
 
         lifecycleScope.launch {
-            val cached = streamPreResolver.getCached(target.id, type)
-                ?.firstOrNull { !it.requiresBrowser && !it.forceWebView }
-            val stream = cached ?: run {
-                target.sources[type]?.let { resolver.resolveAll(it) }
-                    ?.firstOrNull { !it.requiresBrowser && !it.forceWebView }
-            }
+            // Single resolve pass: try cache first, then fresh resolve if empty.
+            val allStreams = (streamPreResolver.getCached(target.id, type)
+                ?: target.sources[type]?.let { resolver.resolveAll(it) })
+                ?: emptyList()
+            // Only direct ExoPlayer-compatible streams can be preloaded.
+            val stream = allStreams.firstOrNull { !it.requiresBrowser && !it.forceWebView }
             // Abandon if the user surfed away while we were resolving.
             if (stream == null || nextPlayerChannelId != target.id) return@launch
 
@@ -524,10 +560,11 @@ class TVPlaybackActivity : ComponentActivity() {
                 .setUserAgent(USER_AGENT).setAllowCrossProtocolRedirects(true)
             if (stream.headers.isNotEmpty()) dsf.setDefaultRequestProperties(stream.headers)
 
+            val ds = sourcePreferences.isDataSaverEnabled()
             val exo = ExoPlayer.Builder(this@TVPlaybackActivity)
                 .setMediaSourceFactory(DefaultMediaSourceFactory(dsf))
-                .setLoadControl(StreamLoadControl.build())
-                .setTrackSelector(StreamTrackSelector.build(this@TVPlaybackActivity))
+                .setLoadControl(StreamLoadControl.build(ds))
+                .setTrackSelector(StreamTrackSelector.build(this@TVPlaybackActivity, ds))
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).setUsage(C.USAGE_MEDIA).build(),
@@ -651,10 +688,16 @@ class TVPlaybackActivity : ComponentActivity() {
     }
 
     /** OK pressed in the chooser: switch to the highlighted source. On a no-signal screen, OK on
-     *  the same source re-tunes it (retry); otherwise an unchanged pick just closes the chooser. */
+     *  the same source re-tunes it (retry); otherwise an unchanged pick just closes the chooser.
+     *  Manual selections are tracked in the session manager and protected by validation recovery. */
     private fun commitSourceSelection() {
         sourceBarActive = false
-        if (pendingSourceIndex != currentOptionIndex || stateMachine.shouldShowStatic) playFromIndex(pendingSourceIndex)
+        if (pendingSourceIndex != currentOptionIndex || stateMachine.shouldShowStatic) {
+            val type = sourceOptions.getOrNull(pendingSourceIndex)?.first ?: return
+            sessionManager.markSourceSelected(type, PlaybackSessionManager.SourceSelectionMode.MANUAL)
+            startValidationRecovery()
+            playFromIndex(pendingSourceIndex)
+        }
         else hideOverlays()
     }
 
@@ -987,25 +1030,84 @@ class TVPlaybackActivity : ComponentActivity() {
     // -----------------------------------------------------------------------------------------
 
     /**
-     * Try the next source option for the current channel. If no sources remain, signals
-     * ALL_SOURCES_EXHAUSTED to the state machine (which gates the TV static overlay).
+     * Try the next source option for the current channel — safe failover.
+     * Uses [SourceSelector.selectForFailover] which prefers verified-playable sources.
+     * If no verified source remains, falls back to the next ranked source.
+     * If ALL sources exhausted, signals ALL_SOURCES_EXHAUSTED (→ TV static).
      */
     private fun tryNextSource(): Boolean {
         val failing = selectedType
         val chId = channel?.id
+        val ch = channel
         if (chId != null && failing != null) {
             channelHealthEngine.recordPlaybackFailure(chId, failing, "tryNextSource")
         }
-        val next = currentOptionIndex + 1
-        if (next >= sourceOptions.size) {
-            stateMachine.transition(PlaybackStateMachine.Event.ALL_SOURCES_EXHAUSTED)
-            return false
+        // Safe failover: prefer verified-playable sources.
+        if (ch != null && failing != null) {
+            val tried = mutableSetOf<SourceType>()
+            tried.add(failing)
+            // Add all sources before currentOptionIndex as tried
+            for (i in 0 until currentOptionIndex) {
+                sourceOptions.getOrNull(i)?.first?.let { tried.add(it) }
+            }
+            val failover = sourceSelector.selectForFailover(ch, failing, tried)
+            if (failover != null) {
+                val nextIdx = sourceOptions.indexOfFirst { it.first == failover.type }
+                if (nextIdx >= 0) {
+                    currentOptionIndex = nextIdx
+                    sessionManager.markSourceSelected(failover.type, PlaybackSessionManager.SourceSelectionMode.FAILOVER)
+                    sessionManager.recordFailover(failing, failover.type, "playback_failure")
+                    handler.removeCallbacks(connectWatchdogRunnable)
+                    refreshKeepScreenOn()
+                    playFromIndex(currentOptionIndex)
+                    return true
+                }
+            }
         }
-        currentOptionIndex = next
-        handler.removeCallbacks(connectWatchdogRunnable)
-        refreshKeepScreenOn()
-        playFromIndex(currentOptionIndex)
-        return true
+        // All sources exhausted → TV static
+        stateMachine.transition(PlaybackStateMachine.Event.ALL_SOURCES_EXHAUSTED)
+        return false
+    }
+
+    /** Recover from a failed manual source selection back to the default verified source.
+     *  Shows a brief OSD message explaining the switch. */
+    private fun recoverToDefault() {
+        val defaultSource = sessionManager.recoverToDefault()
+        if (defaultSource != null) {
+            val ch = channel ?: return
+            val defaultIdx = sourceOptions.indexOfFirst { it.first == defaultSource }
+            if (defaultIdx >= 0) {
+                sessionManager.recordFailover(
+                    sessionManager.getCurrentPlaybackSource() ?: SourceType.VERIFIED,
+                    defaultSource,
+                    "manual_source_failure",
+                    wasUserSelection = true,
+                )
+                currentOptionIndex = defaultIdx
+                handler.removeCallbacks(connectWatchdogRunnable)
+                refreshKeepScreenOn()
+                showToastMessage("Source unavailable — switched back")
+                playFromIndex(currentOptionIndex)
+            }
+        }
+    }
+
+    /** Start validation recovery timer for a manually selected source. */
+    private fun startValidationRecovery() {
+        handler.removeCallbacks(validationRecoveryRunnable)
+        handler.postDelayed(validationRecoveryRunnable, validationTimeoutMs)
+    }
+
+    /** Cancel the validation recovery timer — source validated successfully. */
+    private fun cancelValidationRecovery() {
+        handler.removeCallbacks(validationRecoveryRunnable)
+    }
+
+    /** Show a brief unobtrusive toast message. */
+    private fun showToastMessage(message: String) {
+        val toast = android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT)
+        toast.duration = android.widget.Toast.LENGTH_SHORT
+        toast.show()
     }
 
     private fun playFromIndex(index: Int) {
@@ -1013,7 +1115,6 @@ class TVPlaybackActivity : ComponentActivity() {
         currentOptionIndex = index
         val (type, _) = sourceOptions[index]
         selectedType = type
-        // Enter LOADING from whatever state we're in
         stateMachine.transition(PlaybackStateMachine.Event.CHANNEL_CHANGE)
         if (stateMachine.state != PlaybackStateMachine.State.LOADING) {
             stateMachine.transition(PlaybackStateMachine.Event.LOAD)
@@ -1024,23 +1125,180 @@ class TVPlaybackActivity : ComponentActivity() {
         progress.visibility = View.VISIBLE
 
         lifecycleScope.launch {
-            val cached = streamPreResolver.getCached(ch.id, type)
-                ?.firstOrNull { !it.requiresBrowser && !it.forceWebView }
+            // Single resolve pass: try cache first, then fresh resolve if empty.
+            val source = ch.sources[type]
+            val allStreams = (source?.let { streamPreResolver.getCached(ch.id, type) }
+                ?: source?.let { resolver.resolveAll(it) })
+                ?: emptyList()
 
-            val stream = cached ?: run {
-                val source = ch.sources[type]
-                source?.let { resolver.resolveAll(it) }
-                    ?.firstOrNull { !it.requiresBrowser && !it.forceWebView }
-            }
-
-            if (stream == null) {
-                tryNextSource()
+            // Try direct ExoPlayer‑compatible streams first.
+            val direct = allStreams.firstOrNull { !it.requiresBrowser && !it.forceWebView }
+            if (direct != null) {
+                stateMachine.transition(PlaybackStateMachine.Event.URL_RESOLVED)
+                startPlayback(direct)
                 return@launch
             }
-            stateMachine.transition(PlaybackStateMachine.Event.URL_RESOLVED)
-            startPlayback(stream)
+
+            // No direct stream — try extraction from browser‑required URLs.
+            val browser = allStreams.firstOrNull { it.requiresBrowser }
+            if (browser != null) {
+                stateMachine.transition(PlaybackStateMachine.Event.URL_RESOLVED)
+                startStreamExtraction(browser.url, source?.headers ?: emptyMap())
+                return@launch
+            }
+
+            // Last resort: force‑WebView mode (visible WebView player).
+            val webViewUrl = allStreams.firstOrNull { it.forceWebView }
+            if (webViewUrl != null) {
+                stateMachine.transition(PlaybackStateMachine.Event.URL_RESOLVED)
+                startWebViewPlayback(webViewUrl.url, source?.headers ?: emptyMap())
+                return@launch
+            }
+
+            tryNextSource()
         }
     }
+
+    /** Launch a hidden WebView that loads [pageUrl] and extracts an HLS/MPD manifest URL,
+     *  then starts ExoPlayer playback with the result.  On failure, falls to the next source. */
+    private fun startStreamExtraction(pageUrl: String, headers: Map<String, String>) {
+        val done = AtomicBoolean(false)
+        val mainHandler = handler
+
+        val webView = WebView(this).apply {
+            layoutParams = ViewGroup.LayoutParams(1, 1)
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                mediaPlaybackRequiresUserGesture = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                loadWithOverviewMode = true
+                useWideViewPort = true
+                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            val capture: (String) -> Unit = { url ->
+                if (isMediaStreamUrl(url) && done.compareAndSet(false, true)) {
+                    mainHandler.post {
+                        val root = playerView.parent as? FrameLayout
+                        root?.removeView(this)
+                        startPlayback(StreamInfo(url = url, headers = headers))
+                    }
+                }
+            }
+            addJavascriptInterface(object {
+                @android.webkit.JavascriptInterface
+                fun onFound(url: String) { capture(url) }
+            }, "SVExtract")
+            webChromeClient = WebChromeClient()
+            webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView, request: WebResourceRequest,
+                ): WebResourceResponse? {
+                    val u = request.url.toString()
+                    if (isMediaStreamUrl(u)) {
+                        mainHandler.post { capture(u) }
+                    }
+                    if (AdBlocker.isAdUrl(u)) {
+                        return WebResourceResponse("text/plain", "UTF-8", null)
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
+                override fun onPageFinished(view: WebView, url: String) {
+                    val hook = """
+                        (function(){
+                          if(window.__svhook) return; window.__svhook=1;
+                          function rep(u){ try{ if(u && /\.(m3u8|mpd)(\?|${'$'}|#)/i.test(''+u)) SVExtract.onFound(''+u); }catch(e){} }
+                          try{ var of=window.fetch; if(of){ window.fetch=function(){ try{ var a=arguments[0]; rep(a&&(a.url||a)); }catch(e){} return of.apply(this,arguments); }; } }catch(e){}
+                          try{ var oo=XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open=function(m,u){ rep(u); return oo.apply(this,arguments); }; }catch(e){}
+                        })();
+                    """.trimIndent()
+                    val scan = """
+                        (function(){
+                          try {
+                            document.querySelectorAll('video').forEach(function(v){ v.muted=true; v.autoplay=true; var p=v.play(); if(p&&p.catch)p.catch(function(){}); });
+                            document.querySelectorAll('video,source').forEach(function(v){ if(v.src) SVExtract.onFound(v.src); });
+                            var html=document.documentElement.innerHTML;
+                            var re=/https?:\/\/[^"'\\\s<>()]+\.(m3u8|mpd)[^"'\\\s<>()]*/ig, m;
+                            while((m=re.exec(html))!==null){ SVExtract.onFound(m[0]); }
+                          } catch(e){}
+                        })();
+                    """.trimIndent()
+                    view.evaluateJavascript(hook, null)
+                    view.evaluateJavascript(scan, null)
+                }
+            }
+            // Timeout: if extraction takes > 20 s, give up and try the next source.
+            mainHandler.postDelayed({
+                if (done.compareAndSet(false, true)) {
+                    playerView.parent?.let { (it as? FrameLayout)?.removeView(this) }
+                    tryNextSource()
+                }
+            }, 20_000)
+            loadUrl(pageUrl)
+        }
+        // Attach the hidden WebView so JavaScript execution is allowed.
+        (playerView.parent as? FrameLayout)?.addView(webView)
+    }
+
+    /**
+     * Fall back to a visible WebView when no other playback mode is available
+     * (e.g. a YouTube embed or custom page that must run JavaScript).  This
+     * mirrors the phone app's WEBVIEW [PlayerStreamMode] handling.
+     */
+    private fun startWebViewPlayback(pageUrl: String, headers: Map<String, String>) {
+        val webView = WebView(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                mediaPlaybackRequiresUserGesture = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                loadWithOverviewMode = true
+                useWideViewPort = true
+                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView, request: WebResourceRequest,
+                ): WebResourceResponse? {
+                    if (AdBlocker.isAdUrl(request.url.toString())) {
+                        return WebResourceResponse("text/plain", "UTF-8", null)
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
+            }
+            webChromeClient = object : WebChromeClient() {
+                override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                    // Let the WebView handle its own fullscreen if needed.
+                }
+            }
+        }
+        // Replace player‑surface area with the WebView.
+        progress.visibility = View.GONE
+        playerView.visibility = View.GONE
+        val container = playerView.parent as? FrameLayout
+        container?.addView(webView)
+        // Remember so we can tear it down on next tune.
+        webViewPlaceholder = webView
+        webView.loadUrl(pageUrl)
+    }
+
+    /** Tear down any visible WebView left from [startWebViewPlayback]. */
+    private fun removeWebViewPlaceholder() {
+        webViewPlaceholder?.let { wv ->
+            val container = wv.parent as? FrameLayout
+            container?.removeView(wv)
+            webViewPlaceholder = null
+        }
+    }
+
+    private fun isMediaStreamUrl(url: String): Boolean =
+        Regex("\\.(m3u8|mpd)(\\?|#|\$)").containsMatchIn(url)
 
     /** Hold the screen awake while playing or any active loading/recovery state. */
     private fun refreshKeepScreenOn() {
@@ -1074,12 +1332,35 @@ class TVPlaybackActivity : ComponentActivity() {
      * handled centrally via the [stateMachine.onStateChanged] callback.
      */
     private val activeListener = object : Player.Listener {
+        override fun onRenderedFirstFrame() {
+            playerView.visibility = View.VISIBLE
+            refreshKeepScreenOn()
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) playerView.visibility = View.VISIBLE
             refreshKeepScreenOn()
             if (isPlaying) {
                 val chId = channel?.id ?: return
                 val srcType = selectedType ?: return
                 channelHealthEngine.recordPlaybackSuccess(chId, srcType)
+                // Complete validation in session manager — source confirmed working.
+                sessionManager.markValidationComplete(success = true)
+                cancelValidationRecovery()
+                // Recalculate default source (health may have changed), but never interrupt
+                // a working manual selection.
+                val ch = channel
+                if (ch != null) {
+                    val updated = sourceSelector.recalculateDefault(
+                        ch,
+                        sessionManager.getCurrentPlaybackSource(),
+                        sessionManager.getSelectionMode() == PlaybackSessionManager.SourceSelectionMode.MANUAL,
+                        true,
+                    )
+                    if (updated != null) {
+                        sessionManager.updateDefaultSource(updated.type)
+                    }
+                }
             }
         }
 
@@ -1110,6 +1391,15 @@ class TVPlaybackActivity : ComponentActivity() {
             // Record playback failure for health tracking.
             if (chId != null && srcType != null) {
                 channelHealthEngine.recordPlaybackFailure(chId, srcType, error.localizedMessage ?: "player_error")
+            }
+            // Mark validation as failed in session manager.
+            sessionManager.markValidationComplete(success = false)
+            cancelValidationRecovery()
+            // If manual selection failed before ever validating (never played), recover to default.
+            if (sessionManager.getSelectionMode() == PlaybackSessionManager.SourceSelectionMode.MANUAL &&
+                !sessionManager.isSourceValidated()) {
+                recoverToDefault()
+                return
             }
             stateMachine.transition(PlaybackStateMachine.Event.PLAYBACK_ERROR)
             if (stateMachine.state == PlaybackStateMachine.State.RECOVERING) {
@@ -1161,12 +1451,11 @@ class TVPlaybackActivity : ComponentActivity() {
             )
         }
 
+        val ds = sourcePreferences.isDataSaverEnabled()
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
-            .setLoadControl(StreamLoadControl.build())
-            .setTrackSelector(com.streamverse.core.util.StreamTrackSelector.build(this))
-            // Handle audio focus so volume, ducking, and pause-on-call coordinate with the
-            // system and other apps; MOVIE usage is the right hint for live TV/video.
+            .setLoadControl(StreamLoadControl.build(ds))
+            .setTrackSelector(com.streamverse.core.util.StreamTrackSelector.build(this, ds))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
@@ -1203,6 +1492,9 @@ class TVPlaybackActivity : ComponentActivity() {
         exo.prepare()
         player = exo
         playerView.player = exo
+        // Hide the surface until the first frame renders, preventing the decoder's
+        // uninitialised buffer (black / noise) from being visible to the user.
+        playerView.visibility = View.INVISIBLE
 
         // Publish a media session so Alexa (FireTV) / Assistant (Android TV) voice commands
         // and the system media transport controls drive playback.
@@ -1251,7 +1543,7 @@ class TVPlaybackActivity : ComponentActivity() {
     private fun buildSourceOptions(channel: Channel): List<Pair<SourceType, String>> {
         val enabled = sourcePreferences.enabled()
         val seen = LinkedHashSet<SourceProvider>()
-        return SOURCE_PRIORITY.mapNotNull { type ->
+        return sourceResolutionEngine.rankSources(channel).mapNotNull { type ->
             val provider = SourceProvider.forType(type)
             if (channel.sources.containsKey(type) && seen.add(provider) && enabled[provider] != false) type to provider.displayName
             else null
@@ -1406,16 +1698,5 @@ class TVPlaybackActivity : ComponentActivity() {
         private const val PRELOAD_DEBOUNCE_MS = 200L
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-        private val SOURCE_PRIORITY = listOf(
-            SourceType.VERIFIED, SourceType.INDEPENDENT,
-            SourceType.BROADCASTER,
-            SourceType.SPORTS_EVENTS, SourceType.DLHD,
-            SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
-            SourceType.IPTV, SourceType.FREE_TV, SourceType.FAST_TV,
-            SourceType.FREE_CHANNEL,
-            SourceType.PREMIUM,
-            SourceType.RADIO,
-        )
     }
 }

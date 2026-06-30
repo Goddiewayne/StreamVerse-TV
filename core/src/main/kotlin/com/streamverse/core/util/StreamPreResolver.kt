@@ -3,6 +3,8 @@ package com.streamverse.core.util
 import com.streamverse.core.data.source.provider.ProviderRegistry
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.SourceType
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -71,6 +73,32 @@ class StreamPreResolver @Inject constructor(
     }
 
     /**
+     * Pre-resolve ALL of [channel]'s playable sources in parallel and cache their stream URLs.
+     * Instant failover: when the primary source drops, the next source's URLs are already cached
+     * so [resolveAndPlay] skips the network round-trip.
+     *
+     * Already-cached sources are skipped; already-running jobs are not re-launched.
+     * Safe to call from the main thread.
+     */
+    suspend fun preResolveAll(channel: Channel) {
+        val sources = providerRegistry.prioritySorted()
+            .mapNotNull { t -> channel.sources[t]?.let { t to it } }
+        if (sources.isEmpty()) return
+        coroutineScope {
+            sources.map { (type, sourceInfo) ->
+                async {
+                    val key = cacheKey(channel.id, type)
+                    if (cache[key]?.isFresh() == true) return@async
+                    runCatching { streamResolver.resolveAll(sourceInfo) }
+                        .getOrNull()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.also { cache[key] = Entry(it, System.currentTimeMillis()) }
+                }
+            }
+        }
+    }
+
+    /**
      * Returns a fresh cached resolution for [channelId] + [type], or `null` if the cache
      * entry is missing or stale.  Hot path — no coroutine needed.
      */
@@ -84,8 +112,10 @@ class StreamPreResolver @Inject constructor(
     private fun cacheKey(channelId: String, type: SourceType) = "$channelId:$type"
 
     companion object {
-        private const val TTL_MS = 3 * 60 * 1_000L
-        private const val MAX_ENTRIES = 30
+        /** 10-minute TTL — live stream endpoint tokens rarely rotate more often. */
+        private const val TTL_MS = 10 * 60 * 1_000L
+        /** 10-entry LRU — covers the visible-card row plus a couple of overflow channels. */
+        private const val MAX_ENTRIES = 10
 
         // Priority is now centralized in ProviderRegistry
     }

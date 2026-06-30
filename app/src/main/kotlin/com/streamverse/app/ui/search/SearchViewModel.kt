@@ -4,10 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.SearchHistoryPreferences
-import com.streamverse.core.data.sourceProviderCount
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.FavoritesRepository
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.ChannelSummary
+import com.streamverse.core.domain.model.toSummary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -67,7 +68,7 @@ fun countryCodeToRegion(code: String): String {
 
 data class SearchUiState(
     val query: String = "",
-    val results: List<Channel> = emptyList(),
+    val results: List<ChannelSummary> = emptyList(),
     val isSearching: Boolean = false,
     val browseTab: BrowseTab = BrowseTab.SEARCH,
     val selectedCountry: String? = null,
@@ -90,10 +91,7 @@ class SearchViewModel @Inject constructor(
         .map { it.toSet() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
-    // WhileSubscribed (not Eagerly): only materialize the filtered index while the Search
-    // screen is actually observing it, so it doesn't churn in the background on every channel
-    // update when the user is elsewhere.
-    val allChannels: StateFlow<List<Channel>> = repository.channels
+    val allChannels: StateFlow<List<ChannelSummary>> = repository.channelSummaries
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** The user's recent searches (persisted), most-recent first. */
@@ -110,7 +108,7 @@ class SearchViewModel @Inject constructor(
             else {
                 val fromCatalog = channels.asSequence()
                     .filter { it.displayName.isNotBlank() && it.logoUrl != null }
-                    .sortedByDescending { it.sourceProviderCount() }
+                    .sortedByDescending { it.sourceCount }
                     .map { it.displayName }
                     .distinct()
                     .take(POPULAR_TARGET)
@@ -163,12 +161,11 @@ class SearchViewModel @Inject constructor(
                 // nothing is silently dropped. Results are already relevance-ranked (curated/Stmify
                 // hits first), so the most useful matches still sit at the top.
                 val results = repository.searchChannels(query)
+                healthEngine.verify(results.take(60), deep = false)
                 _uiState.value = _uiState.value.copy(
-                    results = results,
+                    results = results.map { it.toSummary() },
                     isSearching = false,
                 )
-                // Verify the top of the result set so LIVE badges fill in as the user scans.
-                healthEngine.verify(results.take(60), deep = false)
             }
         } else {
             _uiState.value = _uiState.value.copy(results = emptyList(), isSearching = false)
@@ -187,13 +184,14 @@ class SearchViewModel @Inject constructor(
         onQueryChanged(term)
     }
 
-    fun toggleFavorite(channel: Channel) {
+    fun toggleFavorite(channelId: String) {
         viewModelScope.launch {
-            val isFav = favoriteIds.value.contains(channel.id)
+            val isFav = favoriteIds.value.contains(channelId)
             if (isFav) {
-                favoritesRepository.removeFavorite(channel.id)
+                favoritesRepository.removeFavorite(channelId)
             } else {
-                favoritesRepository.addFavorite(channel)
+                val ch = repository.getCachedChannels().find { it.id == channelId }
+                if (ch != null) favoritesRepository.addFavorite(ch)
             }
         }
     }

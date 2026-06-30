@@ -6,6 +6,8 @@ import com.streamverse.core.domain.model.Quality
 import com.streamverse.core.domain.model.SourceInfo
 import com.streamverse.core.domain.model.SourceType
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
@@ -18,114 +20,154 @@ import javax.inject.Singleton
 class ChannelCacheManager @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
-    // Binary streaming cache: length-prefixed UTF-8, far faster + lower-alloc than JSON for 50k+
-    // channels. Bump the file suffix when the on-disk format or Channel model changes.
-    private val cacheFile = File(context.cacheDir, "sv_channels_v10.bin")
-    private val maxAgeMs = 2 * 60 * 60 * 1000L  // 2 hours
+    private val cacheDir get() = context.cacheDir
+    private val manifestFile = File(cacheDir, "channels_v11.manifest")
+    private val chunkPrefix = "channels_v11_chunk_"
+    private val maxChunkSize = 500
+    private val maxAgeMs = 2 * 60 * 60 * 1000L
 
-    private val searchableCacheFile = File(context.cacheDir, "sv_searchable_v2.bin")
-    private val searchableMaxAgeMs = 24 * 60 * 60 * 1000L  // 24 hours
+    /** Load all chunks in parallel. Returns null if cache is absent, stale, or corrupt. */
+    suspend fun load(): List<Channel>? = coroutineScope {
+        if (!manifestFile.exists()) return@coroutineScope null
+        if (System.currentTimeMillis() - manifestFile.lastModified() > maxAgeMs) return@coroutineScope null
+        val manifest = readManifest() ?: return@coroutineScope null
+        val results = (0 until manifest.chunkCount).map { i ->
+            async { readChunk(chunkFile(i)) }
+        }
+        val all = ArrayList<Channel>(manifest.totalChannels.coerceIn(0, 200_000))
+        for (r in results) {
+            val chunk = r.await() ?: return@coroutineScope null
+            all.addAll(chunk)
+        }
+        all
+    }
 
-    fun load(): List<Channel>? = readIfFresh(cacheFile, maxAgeMs)
+    /** Save channels split into chunks. */
+    fun save(channels: List<Channel>) {
+        invalidate()
+        val chunkCount = (channels.size + maxChunkSize - 1) / maxChunkSize
+        for (i in 0 until chunkCount) {
+            val from = i * maxChunkSize
+            val to = minOf(from + maxChunkSize, channels.size)
+            writeChunk(channels.subList(from, to), chunkFile(i))
+        }
+        writeManifest(Manifest(chunkCount = chunkCount, totalChannels = channels.size))
+    }
 
-    fun save(channels: List<Channel>) = writeChannels(channels, cacheFile)
-
-    fun invalidate() = cacheFile.delete()
-
-    fun loadSearchable(): List<Channel>? = readIfFresh(searchableCacheFile, searchableMaxAgeMs)
-
-    fun saveSearchable(channels: List<Channel>) = writeChannels(channels, searchableCacheFile)
-
-    fun invalidateSearchable() = searchableCacheFile.delete()
-
-    private fun readIfFresh(file: File, maxAge: Long): List<Channel>? {
-        if (!file.exists()) return null
-        if (System.currentTimeMillis() - file.lastModified() > maxAge) return null
-        return try {
-            DataInputStream(BufferedInputStream(file.inputStream(), BUFFER)).use { readChannels(it) }
-        } catch (_: Exception) {
-            null
+    fun invalidate() {
+        manifestFile.delete()
+        var i = 0
+        while (true) {
+            val f = chunkFile(i)
+            if (!f.exists()) break
+            f.delete(); i++
         }
     }
 
-    private fun writeChannels(channels: List<Channel>, file: File) {
+    fun invalidateSearchable() {}
+
+    private fun chunkFile(index: Int) = File(cacheDir, "$chunkPrefix${"%04d".format(index)}.bin")
+
+    private class Manifest(val chunkCount: Int, val totalChannels: Int)
+
+    private fun readManifest(): Manifest? = try {
+        DataInputStream(BufferedInputStream(manifestFile.inputStream(), BUFFER)).use { inp ->
+            if (inp.readInt() != MANIFEST_MAGIC) return null
+            Manifest(chunkCount = inp.readInt(), totalChannels = inp.readInt())
+        }
+    } catch (_: Exception) { null }
+
+    private fun writeManifest(m: Manifest) {
         try {
-            DataOutputStream(BufferedOutputStream(file.outputStream(), BUFFER)).use { out ->
-                out.writeInt(MAGIC)
-                out.writeInt(channels.size)
-                for (ch in channels) {
-                    out.writeStr(ch.id)
-                    out.writeStr(ch.logicalId)
-                    out.writeStr(ch.displayName)
-                    out.writeStr(ch.logoUrl)
-                    out.writeStr(ch.quality?.name)
-                    out.writeStr(ch.category)
-                    out.writeStr(ch.language)
-                    out.writeStr(ch.country)
-                    out.writeStr(ch.description)
-                    out.writeStr(ch.tvgId)
-                    out.writeInt(ch.aliases.size)
-                    for (a in ch.aliases) out.writeStr(a)
-                    out.writeInt(ch.sources.size)
-                    for ((type, info) in ch.sources) {
-                        out.writeStr(type.name)
-                        out.writeStr(info.referenceId)
-                        out.writeStr(info.streamUrl)
-                        // headers intentionally omitted from cache — saves ~50MB heap on phone
-                        out.writeStr(info.drmKeyId)
-                        out.writeStr(info.drmKey)
-                    }
-                }
+            DataOutputStream(BufferedOutputStream(manifestFile.outputStream(), BUFFER)).use { out ->
+                out.writeInt(MANIFEST_MAGIC)
+                out.writeInt(m.chunkCount)
+                out.writeInt(m.totalChannels)
             }
         } catch (_: Exception) {}
     }
 
-    private fun readChannels(inp: DataInputStream): List<Channel> {
-        if (inp.readInt() != MAGIC) return emptyList()
-        val count = inp.readInt()
-        val channels = ArrayList<Channel>(count.coerceIn(0, 200_000))
-        repeat(count) {
-            val id = inp.readStr().orEmpty()
-            val logicalId = inp.readStr()?.takeIf { it.isNotBlank() }
-            val displayName = inp.readStr().orEmpty()
-            val logoUrl = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
-            val quality = inp.readStr()?.let { runCatching { Quality.valueOf(it) }.getOrNull() }
-            val category = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
-            val language = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
-            val country = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
-            val description = inp.readStr()?.takeIf { it.isNotBlank() }
-            val tvgId = inp.readStr()?.takeIf { it.isNotBlank() }
-            val aliasCount = inp.readInt()
-            val aliases = ArrayList<String>(aliasCount.coerceIn(0, 64))
-            repeat(aliasCount) { inp.readStr()?.let { aliases.add(it) } }
-            val srcCount = inp.readInt()
-            val sources = LinkedHashMap<SourceType, SourceInfo>(srcCount.coerceAtLeast(1))
-            repeat(srcCount) {
-                val typeName = inp.readStr()
-                val refId = inp.readStr().orEmpty()
-                val streamUrl = inp.readStr()?.takeIf { it.isNotBlank() }
-                val drmKeyId = inp.readStr()?.takeIf { it.isNotBlank() }
-                val drmKey = inp.readStr()?.takeIf { it.isNotBlank() }
-                val type = typeName?.let { runCatching { SourceType.valueOf(it) }.getOrNull() }
-                if (type != null) {
-                    sources[type] = SourceInfo(
-                        type = type, referenceId = refId, streamUrl = streamUrl,
-                        headers = emptyMap(), drmKeyId = drmKeyId, drmKey = drmKey,
-                    )
-                }
+    private fun readChunk(file: File): List<Channel>? = try {
+        DataInputStream(BufferedInputStream(file.inputStream(), BUFFER)).use { inp ->
+            if (inp.readInt() != CHUNK_MAGIC) return null
+            val count = inp.readInt()
+            val channels = ArrayList<Channel>(count.coerceIn(0, maxChunkSize))
+            repeat(count) { readOne(inp)?.let { channels.add(it) } }
+            channels
+        }
+    } catch (_: Exception) { null }
+
+    private fun writeChunk(channels: List<Channel>, file: File) {
+        try {
+            DataOutputStream(BufferedOutputStream(file.outputStream(), BUFFER)).use { out ->
+                out.writeInt(CHUNK_MAGIC)
+                out.writeInt(channels.size)
+                for (ch in channels) writeOne(out, ch)
             }
-            if (id.isNotBlank() && displayName.isNotBlank()) {
-                channels.add(
-                    Channel(
-                        id = id, logicalId = logicalId ?: id, displayName = displayName,
-                        logoUrl = logoUrl, quality = quality, category = category,
-                        language = language, country = country, description = description,
-                        sources = sources, tvgId = tvgId, aliases = aliases,
-                    )
+        } catch (_: Exception) {}
+    }
+
+    private fun writeOne(out: DataOutputStream, ch: Channel) {
+        out.writeStr(ch.id)
+        out.writeStr(ch.logicalId)
+        out.writeStr(ch.displayName)
+        out.writeStr(ch.logoUrl)
+        out.writeStr(ch.quality?.name)
+        out.writeStr(ch.category)
+        out.writeStr(ch.language)
+        out.writeStr(ch.country)
+        out.writeStr(ch.description)
+        out.writeStr(ch.tvgId)
+        out.writeInt(ch.aliases.size)
+        for (a in ch.aliases) out.writeStr(a)
+        out.writeInt(ch.sources.size)
+        for ((type, info) in ch.sources) {
+            out.writeStr(type.name)
+            out.writeStr(info.referenceId)
+            out.writeStr(info.streamUrl)
+            out.writeStr(info.drmKeyId)
+            out.writeStr(info.drmKey)
+        }
+    }
+
+    private fun readOne(inp: DataInputStream): Channel? {
+        val id = inp.readStr().orEmpty()
+        val logicalId = inp.readStr()?.takeIf { it.isNotBlank() }
+        val displayName = inp.readStr().orEmpty()
+        val logoUrl = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
+        val quality = inp.readStr()?.let { runCatching { Quality.valueOf(it) }.getOrNull() }
+        val category = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
+        val language = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
+        val country = inp.readStr()?.takeIf { it.isNotBlank() }?.intern()
+        val description = inp.readStr()?.takeIf { it.isNotBlank() }
+        val tvgId = inp.readStr()?.takeIf { it.isNotBlank() }
+        val aliasCount = inp.readInt()
+        val aliases = ArrayList<String>(aliasCount.coerceIn(0, 64))
+        repeat(aliasCount) { inp.readStr()?.let { aliases.add(it) } }
+        val srcCount = inp.readInt()
+        val sources = LinkedHashMap<SourceType, SourceInfo>(srcCount.coerceAtLeast(1))
+        repeat(srcCount) {
+            val typeName = inp.readStr()
+            val refId = inp.readStr().orEmpty()
+            val streamUrl = inp.readStr()?.takeIf { it.isNotBlank() }
+            val drmKeyId = inp.readStr()?.takeIf { it.isNotBlank() }
+            val drmKey = inp.readStr()?.takeIf { it.isNotBlank() }
+            val type = typeName?.let { runCatching { SourceType.valueOf(it) }.getOrNull() }
+            if (type != null) {
+                sources[type] = SourceInfo(
+                    type = type, referenceId = refId, streamUrl = streamUrl,
+                    headers = emptyMap(), drmKeyId = drmKeyId, drmKey = drmKey,
                 )
             }
         }
-        return channels
+        return if (id.isNotBlank() && displayName.isNotBlank()) {
+            Channel(
+                id = id, logicalId = logicalId ?: id, displayName = displayName,
+                logoUrl = logoUrl, quality = quality, category = category,
+                language = language, country = country, description = description,
+                sources = sources, tvgId = tvgId, aliases = aliases,
+            )
+        } else null
     }
 
     private fun DataOutputStream.writeStr(s: String?) {
@@ -144,7 +186,8 @@ class ChannelCacheManager @Inject constructor(
     }
 
     private companion object {
-        const val MAGIC = 0x53564331  // "SVC1"
+        const val MANIFEST_MAGIC = 0x53564D46
+        const val CHUNK_MAGIC = 0x53564348
         const val BUFFER = 1 shl 16
     }
 }

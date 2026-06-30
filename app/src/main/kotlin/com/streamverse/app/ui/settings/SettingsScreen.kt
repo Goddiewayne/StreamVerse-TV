@@ -68,6 +68,7 @@ fun SettingsScreen(
     val enabledSources by viewModel.enabledSources.collectAsStateWithLifecycle()
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
     val backgroundPlayback by viewModel.backgroundPlayback.collectAsStateWithLifecycle()
+    val dataSaver by viewModel.dataSaver.collectAsStateWithLifecycle()
     val resizeMode by viewModel.resizeMode.collectAsStateWithLifecycle()
     val staticIntensity by viewModel.staticIntensity.collectAsStateWithLifecycle()
     val staticAudio by viewModel.staticAudio.collectAsStateWithLifecycle()
@@ -329,40 +330,22 @@ fun SettingsScreen(
                     modifier = Modifier.padding(start = 16.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
                 )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(role = Role.Switch) {
-                            viewModel.toggleBackgroundPlayback(!backgroundPlayback)
-                        }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Continue playing when screen is off",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "Keep audio playing in the background; turn off to pause when you leave the player",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Switch(
-                        checked = backgroundPlayback,
-                        onCheckedChange = { viewModel.toggleBackgroundPlayback(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = CyberCyan,
-                            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            uncheckedTrackColor = NavyCard,
-                        ),
-                    )
-                }
+                SettingsToggleRow(
+                    title = "Data Saver",
+                    subtitle = "Reduce data usage: force lowest bitrate, cap pre‑buffer, skip preloading",
+                    checked = dataSaver,
+                    onCheckedChange = { viewModel.toggleDataSaver(it) },
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                SettingsToggleRow(
+                    title = "Continue playing when screen is off",
+                    subtitle = "Keep audio playing in the background; turn off to pause when you leave the player",
+                    checked = backgroundPlayback,
+                    onCheckedChange = { viewModel.toggleBackgroundPlayback(it) },
+                )
                 HorizontalDivider(
                     modifier = Modifier.padding(start = 16.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,

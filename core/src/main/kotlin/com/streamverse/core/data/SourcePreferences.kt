@@ -150,6 +150,21 @@ class SourcePreferences @Inject constructor(
     private val _enabledFlow = MutableStateFlow(readAll())
     val enabledFlow: StateFlow<Map<SourceProvider, Boolean>> = _enabledFlow.asStateFlow()
 
+    private val _priorityOrderFlow = MutableStateFlow(readPriorityOrder())
+    val priorityOrderFlow: StateFlow<List<SourceProvider>> = _priorityOrderFlow.asStateFlow()
+
+    private val _dataSaverFlow = MutableStateFlow(prefs.getBoolean("data_saver", false))
+    val dataSaverFlow: StateFlow<Boolean> = _dataSaverFlow.asStateFlow()
+
+    fun isDataSaverEnabled(): Boolean = _dataSaverFlow.value
+
+    fun setDataSaverEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("data_saver", enabled).apply()
+        _dataSaverFlow.value = enabled
+    }
+
+    fun priorityOrder(): List<SourceProvider> = _priorityOrderFlow.value
+
     fun isEnabled(provider: SourceProvider): Boolean {
         val canonical = SourceProvider.canonicalOf(provider)
         // Check canonical key first, then fall back to deprecated key for migration
@@ -173,6 +188,24 @@ class SourcePreferences @Inject constructor(
 
     /** Returns the currently enabled map, using only canonical providers. */
     fun enabled(): Map<SourceProvider, Boolean> = _enabledFlow.value
+
+    /** Persist the user's custom provider priority order. Empty list = use default. */
+    fun setPriorityOrder(order: List<SourceProvider>) {
+        val key = "priority_order"
+        if (order.isEmpty()) {
+            prefs.edit().remove(key).apply()
+        } else {
+            prefs.edit().putString(key, order.joinToString(",") { it.name }).apply()
+        }
+        _priorityOrderFlow.value = order
+    }
+
+    private fun readPriorityOrder(): List<SourceProvider> {
+        val raw = prefs.getString("priority_order", null) ?: return emptyList()
+        return raw.split(",").mapNotNull { name ->
+            try { SourceProvider.valueOf(name) } catch (_: IllegalArgumentException) { null }
+        }
+    }
 
     /** Migrates any old deprecated SharedPreferences keys to the new canonical key. */
     fun migrate() {

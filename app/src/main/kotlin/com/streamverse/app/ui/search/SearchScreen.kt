@@ -75,7 +75,7 @@ import com.streamverse.app.ui.theme.CyberCyan
 import com.streamverse.app.ui.theme.ElectricViolet
 import com.streamverse.app.ui.theme.NavyCard
 import com.streamverse.app.ui.theme.SpaceNavy
-import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.ChannelSummary
 import com.streamverse.core.util.CategoryNormalizer
 
 @Composable
@@ -209,7 +209,7 @@ private fun SearchTab(
     onSubmit: () -> Unit,
     onClear: () -> Unit,
     onChannelClick: (String) -> Unit,
-    onToggleFavorite: (Channel) -> Unit,
+    onToggleFavorite: (String) -> Unit,
 ) {
     val availableCategories = state.results.mapNotNull { it.category }
         .filter { !it.contains(",") && it.length <= 30 }
@@ -299,12 +299,12 @@ private fun SearchTab(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(state.results, key = { it.id }) { channel ->
+                    items(state.results, key = { it.id }) { ch ->
                         ChannelCard(
-                            channel = channel,
-                            onClick = { onChannelClick(channel.id) },
-                            isFavorite = favIds.contains(channel.id),
-                            onToggleFavorite = { onToggleFavorite(channel) },
+                            channel = ch,
+                            onClick = { onChannelClick(ch.id) },
+                            isFavorite = favIds.contains(ch.id),
+                            onToggleFavorite = { onToggleFavorite(ch.id) },
                         )
                     }
                 }
@@ -343,11 +343,11 @@ val CATEGORY_ICONS = mapOf(
 @Composable
 private fun CategoryTab(
     state: SearchUiState,
-    allChannels: List<Channel>,
+    allChannels: List<ChannelSummary>,
     favIds: Set<String>,
     onSelectCategory: (String?) -> Unit,
     onChannelClick: (String) -> Unit,
-    onToggleFavorite: (Channel) -> Unit,
+    onToggleFavorite: (String) -> Unit,
 ) {
     val channelsByCategory = allChannels.groupBy { it.category ?: CategoryNormalizer.C.GENERAL }
     val selectedCategory = state.selectedLanguage  // reusing selectedLanguage slot for category
@@ -380,12 +380,12 @@ private fun CategoryTab(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(channels, key = { it.id }) { channel ->
+                items(channels, key = { it.id }) { ch ->
                     ChannelCard(
-                        channel = channel,
-                        onClick = { onChannelClick(channel.id) },
-                        isFavorite = favIds.contains(channel.id),
-                        onToggleFavorite = { onToggleFavorite(channel) },
+                        channel = ch,
+                        onClick = { onChannelClick(ch.id) },
+                        isFavorite = favIds.contains(ch.id),
+                        onToggleFavorite = { onToggleFavorite(ch.id) },
                     )
                 }
             }
@@ -445,19 +445,19 @@ private fun CategoryCard(name: String, emoji: String, count: Int, onClick: () ->
 @Composable
 private fun RegionTab(
     state: SearchUiState,
-    allChannels: List<Channel>,
+    allChannels: List<ChannelSummary>,
     favIds: Set<String>,
     onSelectRegion: (String?) -> Unit,
     onSelectCountry: (String?) -> Unit,
     onChannelClick: (String) -> Unit,
-    onToggleFavorite: (Channel) -> Unit,
+    onToggleFavorite: (String) -> Unit,
 ) {
     // Build country → channel count map from loaded channels
     val channelsByCountry = allChannels
         .mapNotNull { ch -> ch.country?.uppercase()?.takeIf { it.length == 2 }?.let { code -> code to ch } }
         .groupBy({ it.first }, { it.second })
 
-    val regionChannelMap: Map<String, Map<String, List<Channel>>> = WORLD_REGIONS.mapValues { (_, codes) ->
+    val regionChannelMap: Map<String, Map<String, List<ChannelSummary>>> = WORLD_REGIONS.mapValues { (_, codes) ->
         codes.mapNotNull { code ->
             channelsByCountry[code]?.let { chs -> code to chs }
         }.toMap()
@@ -493,12 +493,12 @@ private fun RegionTab(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(channels, key = { it.id }) { channel ->
+                items(channels, key = { it.id }) { ch ->
                     ChannelCard(
-                        channel = channel,
-                        onClick = { onChannelClick(channel.id) },
-                        isFavorite = favIds.contains(channel.id),
-                        onToggleFavorite = { onToggleFavorite(channel) },
+                        channel = ch,
+                        onClick = { onChannelClick(ch.id) },
+                        isFavorite = favIds.contains(ch.id),
+                        onToggleFavorite = { onToggleFavorite(ch.id) },
                     )
                 }
             }
@@ -585,7 +585,7 @@ private fun RegionHeader(
 
 @Composable
 private fun CountryChips(
-    countriesMap: Map<String, List<Channel>>,
+    countriesMap: Map<String, List<ChannelSummary>>,
     onSelectCountry: (String) -> Unit,
 ) {
     val sorted = countriesMap.entries.sortedByDescending { it.value.size }
@@ -631,11 +631,11 @@ private fun CountryChip(name: String, count: Int, onClick: () -> Unit) {
 @Composable
 private fun LanguageTab(
     state: SearchUiState,
-    allChannels: List<Channel>,
+    allChannels: List<ChannelSummary>,
     favIds: Set<String>,
     onSelectLanguage: (String?) -> Unit,
     onChannelClick: (String) -> Unit,
-    onToggleFavorite: (Channel) -> Unit,
+    onToggleFavorite: (String) -> Unit,
 ) {
     val channelsByLanguage = allChannels
         .mapNotNull { ch -> ch.language?.lowercase()?.replaceFirstChar { c -> c.uppercaseChar() }?.let { lang -> lang to ch } }
@@ -669,12 +669,12 @@ private fun LanguageTab(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(channels, key = { it.id }) { channel ->
+                items(channels, key = { it.id }) { ch ->
                     ChannelCard(
-                        channel = channel,
-                        onClick = { onChannelClick(channel.id) },
-                        isFavorite = favIds.contains(channel.id),
-                        onToggleFavorite = { onToggleFavorite(channel) },
+                        channel = ch,
+                        onClick = { onChannelClick(ch.id) },
+                        isFavorite = favIds.contains(ch.id),
+                        onToggleFavorite = { onToggleFavorite(ch.id) },
                     )
                 }
             }

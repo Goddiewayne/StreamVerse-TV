@@ -11,6 +11,7 @@ import com.streamverse.core.data.source.ProviderAdapter
 import com.streamverse.core.data.source.ProviderCapability
 import com.streamverse.core.data.source.ProviderState
 import com.streamverse.core.data.source.SourceRegistry
+import com.streamverse.core.data.source.provider.ProviderRegistry
 import com.streamverse.core.domain.model.Channel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -103,6 +104,7 @@ class SourceManagementViewModel @Inject constructor(
     private val sourcePreferences: SourcePreferences,
     private val repository: ChannelRepository,
     private val healthMonitor: HealthMonitor,
+    private val providerRegistry: ProviderRegistry,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SourceManagementUiState())
@@ -111,19 +113,26 @@ class SourceManagementViewModel @Inject constructor(
     private val eventCounter = AtomicInteger(0)
 
     init {
+        // Apply any persisted priority order to the playback pipeline.
+        val initialPriority = sourcePreferences.priorityOrder()
+        if (initialPriority.isNotEmpty()) {
+            providerRegistry.setPriorityOverride(initialPriority)
+        }
         combine(
             sourceRegistry.allProviders,
             sourceRegistry.allStates,
             sourcePreferences.enabledFlow,
-        ) { providers, states, enabled ->
+            sourcePreferences.priorityOrderFlow,
+            repository.channelRefreshTrigger,
+        ) { providers, states, enabled, priority, _ ->
             val channels = repository.getAllChannels()
             val summary = computeSystemSummary(providers, states, enabled, channels)
             val summaries = computeProviderSummaries(providers, states, enabled, channels)
-            val priority = computePriority(enabled)
+            val effectivePriority = if (priority.isNotEmpty()) priority else SourceProvider.entries.toList()
             _uiState.value = _uiState.value.copy(
                 systemSummary = summary,
                 providerSummaries = summaries,
-                priorityOrder = priority,
+                priorityOrder = effectivePriority,
             )
         }.launchIn(viewModelScope)
 
@@ -139,6 +148,11 @@ class SourceManagementViewModel @Inject constructor(
                 )
                 addLiveEvent(event)
             }
+        }
+
+        // Trigger initial data load so the page isn't empty on first open.
+        viewModelScope.launch {
+            repository.load()
         }
     }
 
@@ -161,10 +175,6 @@ class SourceManagementViewModel @Inject constructor(
             if (enabled) sourceRegistry.enable(adapter.providerId)
             else sourceRegistry.disable(adapter.providerId)
         }
-        _uiState.value = _uiState.value.copy(
-            showImpactDialog = false,
-            impactAnalysis = null,
-        )
         val eventType = if (enabled) "enabled" else "disabled"
         addLiveEvent(LiveEvent(
             id = "toggle_${eventCounter.incrementAndGet()}",
@@ -191,6 +201,8 @@ class SourceManagementViewModel @Inject constructor(
             order.removeAt(idx)
             order.add(idx - 1, provider)
             _uiState.value = _uiState.value.copy(priorityOrder = order)
+            sourcePreferences.setPriorityOrder(order)
+            providerRegistry.setPriorityOverride(order)
             addLiveEvent(LiveEvent(
                 id = "priority_${eventCounter.incrementAndGet()}",
                 type = LiveEventType.PLAYBACK,
@@ -209,6 +221,8 @@ class SourceManagementViewModel @Inject constructor(
             order.removeAt(idx)
             order.add(idx + 1, provider)
             _uiState.value = _uiState.value.copy(priorityOrder = order)
+            sourcePreferences.setPriorityOrder(order)
+            providerRegistry.setPriorityOverride(order)
             addLiveEvent(LiveEvent(
                 id = "priority_${eventCounter.incrementAndGet()}",
                 type = LiveEventType.PLAYBACK,
@@ -249,14 +263,22 @@ class SourceManagementViewModel @Inject constructor(
     fun triggerRefreshMetadata() {
         if (_uiState.value.activeOperations.contains("refresh_metadata")) return
         markOperation("refresh_metadata", true)
+        addLiveEvent(LiveEvent(
+            id = "meta_${eventCounter.incrementAndGet()}",
+            type = LiveEventType.METADATA,
+            providerName = "System",
+            message = "Refreshing metadata…",
+            timestamp = System.currentTimeMillis(),
+            severity = LiveEventSeverity.INFO,
+        ))
         viewModelScope.launch {
-            delay(1000)
+            repository.load()
             markOperation("refresh_metadata", false)
             addLiveEvent(LiveEvent(
-                id = "meta_${eventCounter.incrementAndGet()}",
+                id = "meta_done_${eventCounter.incrementAndGet()}",
                 type = LiveEventType.METADATA,
                 providerName = "System",
-                message = "Metadata refresh completed",
+                message = "Metadata refreshed",
                 timestamp = System.currentTimeMillis(),
                 severity = LiveEventSeverity.INFO,
             ))
@@ -266,11 +288,19 @@ class SourceManagementViewModel @Inject constructor(
     fun triggerValidateStreams() {
         if (_uiState.value.activeOperations.contains("validate_streams")) return
         markOperation("validate_streams", true)
+        addLiveEvent(LiveEvent(
+            id = "valid_${eventCounter.incrementAndGet()}",
+            type = LiveEventType.HEALTH,
+            providerName = "System",
+            message = "Validating streams…",
+            timestamp = System.currentTimeMillis(),
+            severity = LiveEventSeverity.INFO,
+        ))
         viewModelScope.launch {
-            delay(2000)
+            repository.load()
             markOperation("validate_streams", false)
             addLiveEvent(LiveEvent(
-                id = "valid_${eventCounter.incrementAndGet()}",
+                id = "valid_done_${eventCounter.incrementAndGet()}",
                 type = LiveEventType.HEALTH,
                 providerName = "System",
                 message = "Stream validation completed",
@@ -283,14 +313,22 @@ class SourceManagementViewModel @Inject constructor(
     fun triggerRebuildIndex() {
         if (_uiState.value.activeOperations.contains("rebuild_index")) return
         markOperation("rebuild_index", true)
+        addLiveEvent(LiveEvent(
+            id = "index_${eventCounter.incrementAndGet()}",
+            type = LiveEventType.DEDUP,
+            providerName = "System",
+            message = "Rebuilding channel index…",
+            timestamp = System.currentTimeMillis(),
+            severity = LiveEventSeverity.INFO,
+        ))
         viewModelScope.launch {
-            delay(800)
+            repository.reload()
             markOperation("rebuild_index", false)
             addLiveEvent(LiveEvent(
-                id = "index_${eventCounter.incrementAndGet()}",
+                id = "index_done_${eventCounter.incrementAndGet()}",
                 type = LiveEventType.DEDUP,
                 providerName = "System",
-                message = "Logical channel index rebuilt",
+                message = "Channel index rebuilt",
                 timestamp = System.currentTimeMillis(),
                 severity = LiveEventSeverity.INFO,
             ))
@@ -298,9 +336,21 @@ class SourceManagementViewModel @Inject constructor(
     }
 
     fun triggerClearMetadataCache() {
+        if (_uiState.value.activeOperations.contains("clear_metadata")) return
+        markOperation("clear_metadata", true)
+        addLiveEvent(LiveEvent(
+            id = "clear_${eventCounter.incrementAndGet()}",
+            type = LiveEventType.METADATA,
+            providerName = "System",
+            message = "Clearing metadata cache…",
+            timestamp = System.currentTimeMillis(),
+            severity = LiveEventSeverity.INFO,
+        ))
         viewModelScope.launch {
+            repository.reload()
+            markOperation("clear_metadata", false)
             addLiveEvent(LiveEvent(
-                id = "clear_${eventCounter.incrementAndGet()}",
+                id = "clear_done_${eventCounter.incrementAndGet()}",
                 type = LiveEventType.METADATA,
                 providerName = "System",
                 message = "Metadata cache cleared",
@@ -394,10 +444,11 @@ class SourceManagementViewModel @Inject constructor(
         enabled: Map<SourceProvider, Boolean>,
         channels: List<Channel>,
     ): SystemSummary {
-        val total = SourceProvider.entries.size
-        val enabledCount = enabled.count { it.value }
+        val canonicalProviders = SourceProvider.entries.filter { it !in SourceProvider.canonical.keys }
+        val total = canonicalProviders.size
+        val enabledCount = enabled.count { it.key in canonicalProviders && it.value }
         val healthy = states.count { it.value.health.isHealthy && it.value.enabled }
-        val warnings = states.count { s ->
+        val warningsCount = states.count { s ->
             s.value.enabled && s.value.lifecycle == LifecycleState.ACTIVE &&
                 s.value.health.consecutiveFailures in 1..4
         }
@@ -413,7 +464,7 @@ class SourceManagementViewModel @Inject constructor(
             totalProviders = total,
             enabledProviders = enabledCount,
             healthyProviders = healthy,
-            warningProviders = warnings,
+            warningProviders = warningsCount,
             offlineProviders = offline,
             totalLogicalChannels = channels.size,
             totalPhysicalStreams = streamCount,
@@ -429,7 +480,8 @@ class SourceManagementViewModel @Inject constructor(
         enabled: Map<SourceProvider, Boolean>,
         channels: List<Channel>,
     ): List<ProviderSummary> {
-        return SourceProvider.entries.map { sp ->
+        val canonicalOnly = SourceProvider.entries.filter { it !in SourceProvider.canonical.keys }
+        return canonicalOnly.mapNotNull { sp ->
             val adapters = providers.filter { it.sourceProvider == sp }
             val primaryId = adapters.firstOrNull()?.providerId ?: sp.name
             val state = states[primaryId] ?: ProviderState(providerId = primaryId)
@@ -447,7 +499,7 @@ class SourceManagementViewModel @Inject constructor(
             val languages = providerChannels.mapNotNull { it.language }.distinct().sorted()
             val reliability = if (state.health.totalRequests > 0) {
                 (state.health.successRate * 100).toInt().coerceIn(0, 100)
-            } else 100
+            } else 0
 
             ProviderSummary(
                 provider = sp,
@@ -471,10 +523,6 @@ class SourceManagementViewModel @Inject constructor(
                 languages = languages,
             )
         }.sortedByDescending { it.isEnabled }
-    }
-
-    private fun computePriority(enabled: Map<SourceProvider, Boolean>): List<SourceProvider> {
-        return _uiState.value.priorityOrder.ifEmpty { SourceProvider.entries.toList() }
     }
 
     private fun markOperation(op: String, active: Boolean) {

@@ -33,7 +33,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -227,7 +226,7 @@ private fun SystemSummarySection(summary: SystemSummary) {
         ) {
             DashboardCard(
                 modifier = Modifier.weight(1f),
-                label = "Verified",
+                label = "Total",
                 value = "${summary.totalProviders}",
                 color = ElectricViolet,
                 accentColor = ElectricViolet.copy(alpha = 0.15f),
@@ -342,7 +341,7 @@ private fun SourceProvidersSection(
     onToggleProvider: (SourceProvider, Boolean) -> Unit,
     onExpandedChange: (String?) -> Unit,
 ) {
-    SectionHeader(title = "Source Providers", subtitle = "Verified content providers")
+    SectionHeader(title = "Source Providers", subtitle = "Manage source providers")
 
     Column(
         modifier = Modifier
@@ -409,7 +408,6 @@ private fun ProviderCard(
                     )
                     if (summary.isEnabled && summary.isHealthy) {
                         Spacer(modifier = Modifier.width(6.dp))
-                        VerifiedBadge()
                     }
                 }
                 Spacer(modifier = Modifier.height(2.dp))
@@ -474,32 +472,6 @@ private fun ProviderMonogram(name: String, isHealthy: Boolean, isEnabled: Boolea
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Black,
             color = bgColor,
-        )
-    }
-}
-
-@Composable
-private fun VerifiedBadge() {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(LiveGreen.copy(alpha = 0.15f))
-            .padding(horizontal = 5.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.Outlined.Check,
-            contentDescription = null,
-            tint = LiveGreen,
-            modifier = Modifier.size(10.dp),
-        )
-        Spacer(modifier = Modifier.width(2.dp))
-        Text(
-            text = "Verified",
-            style = MaterialTheme.typography.labelSmall,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
-            color = LiveGreen,
         )
     }
 }
@@ -914,7 +886,7 @@ private fun SynchronizationSection(
 ) {
     SectionHeader(
         title = "Synchronization",
-        subtitle = "Production-grade maintenance controls",
+        subtitle = "Maintenance controls",
     )
 
     Column(
@@ -951,12 +923,12 @@ private fun SynchronizationSection(
             )
             SyncButton(
                 label = "Clear Metadata Cache",
-                isActive = false,
+                isActive = activeOperations.contains("clear_metadata"),
                 onClick = onClearMetadataCache,
             )
             SyncButton(
                 label = "Clear Stream Cache",
-                isActive = false,
+                isActive = activeOperations.contains("clear_stream"),
                 onClick = onClearStreamCache,
             )
         }
@@ -1348,19 +1320,15 @@ private fun ImpactAnalysisDialog(
             }
         },
         confirmButton = {
-            val canDisable = analysis.channelsUnavailable == 0
             Button(
-                onClick = {
-                    if (canDisable) onConfirm(analysis.providerId)
-                },
-                enabled = canDisable,
+                onClick = { onConfirm(analysis.providerId) },
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (canDisable) CoralRed else CoralRed.copy(alpha = 0.3f),
+                    containerColor = CoralRed,
                     contentColor = Color.White,
                 ),
                 shape = RoundedCornerShape(8.dp),
             ) {
-                Text(if (canDisable) "Disable Provider" else "Cannot Disable")
+                Text("Disable Provider")
             }
         },
         dismissButton = {

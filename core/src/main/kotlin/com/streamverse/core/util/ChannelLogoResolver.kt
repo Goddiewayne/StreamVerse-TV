@@ -1,6 +1,7 @@
 package com.streamverse.core.util
 
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.ChannelSummary
 
 /**
  * Resolves the best image URL to display for a channel.
@@ -20,6 +21,12 @@ object ChannelLogoResolver {
 
     /** The image model to hand to Coil/Glide. Null only when there is nothing reasonable to try. */
     fun model(channel: Channel): String? {
+        channel.logoUrl?.takeIf { it.isNotBlank() }?.let { return it }
+        return clearbitUrl(channel.displayName)
+    }
+
+    /** Overload for [ChannelSummary] — same logic, no full [Channel] needed. */
+    fun model(channel: ChannelSummary): String? {
         channel.logoUrl?.takeIf { it.isNotBlank() }?.let { return it }
         return clearbitUrl(channel.displayName)
     }

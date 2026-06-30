@@ -1,4 +1,4 @@
-package com.streamverse.core.data.repository
+﻿package com.streamverse.core.data.repository
 
 import android.content.Context
 import android.util.Log
@@ -6,6 +6,8 @@ import com.streamverse.core.data.ChannelCacheManager
 import com.streamverse.core.data.SmartCacheManager
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.data.SourceProvider
+import com.streamverse.core.data.local.ChannelSearchDao
+import com.streamverse.core.data.local.ChannelSearchFts
 import com.streamverse.core.data.source.provider.ProviderRegistry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.streamverse.core.data.model.RadioStation
@@ -24,7 +26,8 @@ import com.streamverse.core.data.remote.broadcaster.BroadcasterClient
 
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
-import com.streamverse.core.data.source.ChannelMatchingEngine
+import com.streamverse.core.data.source.ChannelCanonicalizer
+import com.streamverse.core.data.source.EntityResolutionEngine
 import com.streamverse.core.data.source.IncrementalMergeState
 import com.streamverse.core.data.source.LogicalChannelMatcher
 import com.streamverse.core.data.source.MetadataAggregator
@@ -32,6 +35,8 @@ import com.streamverse.core.data.source.SourceItem
 import com.streamverse.core.data.source.SourceRegistry
 import com.streamverse.core.data.source.SourceRegistryInitializer
 import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.ChannelSummary
+import com.streamverse.core.domain.model.toSummary
 
 import com.streamverse.core.domain.model.Quality
 import com.streamverse.core.domain.model.SourceInfo
@@ -56,7 +61,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.yield
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -80,20 +84,22 @@ class ChannelRepository @Inject constructor(
     private val sourcePreferences: SourcePreferences,
     private val dispatchers: StreamVerseDispatchers,
     private val sourceRegistry: SourceRegistry,
-    private val channelMatcher: LogicalChannelMatcher,
+    @Suppress("unused") private val channelMatcher: LogicalChannelMatcher,
     private val metadataAggregator: MetadataAggregator,
     @Suppress("unused") private val registryInitializer: SourceRegistryInitializer,
     private val providerRegistry: ProviderRegistry,
+    private val channelSearchDao: ChannelSearchDao,
     @ApplicationContext private val appContext: Context,
 ) {
-    private val matchingEngine = ChannelMatchingEngine(channelMatcher)
-    private val incrementalMergeState = IncrementalMergeState(matchingEngine, metadataAggregator)
+    private val entityResolutionEngine = EntityResolutionEngine()
+    private val incrementalMergeState = IncrementalMergeState(entityResolutionEngine, metadataAggregator)
     private val loadInProgress = AtomicBoolean(false)
 
     companion object {
         private const val DEAD_CHANNELS_PREFS = "dead_channels"
         private const val DEAD_CHANNELS_MAX_AGE = 7 * 24 * 60 * 60 * 1000L
         private const val PLACEHOLDER_LOGO_THRESHOLD = 5
+        private const val LAST_SEARCH_MAX = 500
 
         // Patterns that identify X-rated/adult channels by display name.
         /** Instant-loading providers (no network — hardcoded or asset-based). */
@@ -111,13 +117,6 @@ class ChannelRepository @Inject constructor(
             Regex("""\b(?:onlyfans|playboy)\b""", RegexOption.IGNORE_CASE),
         )
 
-        /** Words too generic to be useful for channel‑name matching. */
-        private val COMMON_WORDS = setOf(
-            "tv", "hd", "sd", "4k", "fhd", "uhd", "hdr", "the", "and", "for", "via",
-            "channel", "network", "live", "stream", "news", "radio", "sport", "plus",
-            "max", "one", "two", "free", "show", "music", "world", "asia", "africa",
-            "europe", "middle", "east", "west", "north", "south", "central",
-        )
     }
 
     /** Returns true if the channel's display name matches adult-content patterns. */
@@ -175,11 +174,6 @@ class ChannelRepository @Inject constructor(
         deadChannelNames = deadChannelSeed
     }
     private val _channels = MutableStateFlow<List<Channel>>(emptyList())
-    /**
-     * Home/browse channels, filtered to those with at least one enabled source. The filter
-     * runs off the main thread — with extended sources enabled this list can hold thousands
-     * of channels, and collectors (Home/Search/Category) collect on Dispatchers.Main.
-     */
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val channels: Flow<List<Channel>> =
@@ -193,6 +187,10 @@ class ChannelRepository @Inject constructor(
                 }
                 .toList()
         }.flowOn(dispatchers.default)
+
+    val channelSummaries: Flow<List<ChannelSummary>> =
+        channels.map { list: List<Channel> -> list.map { it.toSummary() } }
+            .flowOn(dispatchers.default)
 
     /**
      * IDs of all channels that pass the enabled‑source filter.  Derived from [channels] so it
@@ -211,30 +209,36 @@ class ChannelRepository @Inject constructor(
     /** Logo URLs shared by [PLACEHOLDER_LOGO_THRESHOLD]+ distinct channels — i.e. not real logos. */
     private fun placeholderLogos(chs: List<Channel>): Set<String> {
         if (chs === placeholderCacheFor) return placeholderCache
-        val counts = HashMap<String, Int>(chs.size)
+        val counts = HashMap<String, Int>(chs.size / PLACEHOLDER_LOGO_THRESHOLD + 1)
+        val placeholders = HashSet<String>()
         for (ch in chs) {
             val url = ch.logoUrl ?: continue
             if (url.isBlank()) continue
-            counts[url] = (counts[url] ?: 0) + 1
+            if (url in placeholders) continue
+            val newCount = (counts[url] ?: 0) + 1
+            if (newCount >= PLACEHOLDER_LOGO_THRESHOLD) {
+                counts.remove(url)
+                placeholders.add(url)
+            } else {
+                counts[url] = newCount
+            }
         }
-        val set = counts.asSequence()
-            .filter { it.value >= PLACEHOLDER_LOGO_THRESHOLD }
-            .map { it.key }
-            .toSet()
         placeholderCacheFor = chs
-        placeholderCache = set
-        return set
+        placeholderCache = placeholders
+        return placeholders
     }
 
     // Full merged catalogue for search & radio — grows progressively with each source.
-    private val _searchable = MutableStateFlow<List<Channel>>(emptyList())
+    /** Incremented after each load/reload so subscribers can re-read [getAllChannels]. */
+    private val _channelRefreshTrigger = MutableStateFlow(0L)
+    val channelRefreshTrigger: StateFlow<Long> = _channelRefreshTrigger.asStateFlow()
 
     /**
      * Radio stations for the dedicated "Radio" home row — surfaced only while the Radio source is
      * enabled. Capped so the home screen stays snappy (the full list lives in search).
      */
     val radioChannels: Flow<List<Channel>> =
-        combine(_searchable, sourcePreferences.enabledFlow) { all, enabled ->
+        combine(_channels, sourcePreferences.enabledFlow) { all, enabled ->
             if (enabled[com.streamverse.core.data.SourceProvider.RADIO] == false) emptyList()
             else all.asSequence()
                 .filter { it.sources.containsKey(SourceType.RADIO) }
@@ -252,15 +256,14 @@ class ChannelRepository @Inject constructor(
     // ── Progressive loading state ──────────────────────────────────────────────
     // Maximum concurrent source fetches (semaphore‑controlled).  Higher values load faster
     // but may saturate the device's network / memory.
-    private val maxConcurrentLoads = 6
+    private val maxConcurrentLoads = 10
     private val loadSemaphore = Semaphore(maxConcurrentLoads)
 
     // Per‑source fetch timeout so a single hanging provider never blocks the whole load.
     private val sourceFetchTimeoutMs = 55_000L
 
-    // Accumulated raw source results.  Each [SourceProvider]'s raw data is stored here by its
-    // loader and the full [enrichAndMerge] pipeline re‑runs on every new batch so that
-    // cross‑source deduplication & enrichment always reflects the complete catalogue.
+    // Accumulated raw source results.  Each source loads into its own list, then
+    // mergeSourceIntoState() feeds them into IncrementalMergeState one at a time.
     private var dlhdResults: List<com.streamverse.core.data.model.DlhdChannel> = emptyList()
     private var stmifyResults: List<com.streamverse.core.data.model.StmifyChannel> = emptyList()
     private var iptvResults: List<IptvChannel> = emptyList()
@@ -280,83 +283,14 @@ class ChannelRepository @Inject constructor(
     @Volatile private var lastEmitMs = 0L
 
     // Most recent search results (incl. synthesized Stmify channels) so the player can
-    // resolve them by id when tapped.
+    // resolve them by id when tapped.  Capped to avoid holding thousands of full Channel objects
+    // for a broad query that the user never opens.
     @Volatile private var lastSearchResults: List<Channel> = emptyList()
+        get() = field
+        set(value) { field = if (value.size > LAST_SEARCH_MAX) value.take(LAST_SEARCH_MAX) else value }
 
     // O(1) ID lookup across all channel pools. Rebuilt on every merge.
     @Volatile private var _idIndex: Map<String, Channel> = emptyMap()
-
-    /**
-     * Lightweight search index that pre-computes lowercased names and a word-level token map
-     * so every [searchChannels] call avoids O(n * m) string operations on 15k+ items.
-     */
-    private class SearchIndex(
-        private val channels: List<Channel>,
-        private val lowerNames: List<String> = channels.map { it.displayName.lowercase() },
-        val idIndex: Map<String, Channel> = channels.associateBy { it.id },
-        // Word index for O(1) multi-token intersection — memory-efficient.
-        private val wordIndex: Map<String, Set<Int>> = run {
-            val wm = mutableMapOf<String, MutableSet<Int>>()
-            for ((idx, ch) in channels.withIndex()) {
-                for (token in ch.displayName.lowercase().split(tokenSplit)) {
-                    if (token.length >= 2) wm.getOrPut(token) { mutableSetOf() }.add(idx)
-                }
-            }
-            wm
-        },
-    ) {
-        companion object {
-            private val tokenSplit = Regex("""[\s\-/\.&']+""")
-        }
-
-        /**
-         * Free-text search matches the channel **name only** (never the category — searching
-         * "news" must return channels actually called "… news", not every News-genre channel),
-         * ranked by relevance: exact > starts-with > word-prefix > substring > all-tokens-present,
-         * then shorter names first. [category], when non-null, is applied purely as a filter so the
-         * Category tab can scope results.
-         */
-        fun search(query: String, category: String? = null): List<Channel> {
-            val q = query.lowercase().trim()
-            if (q.isEmpty()) {
-                return if (category != null) channels.filter { it.category == category } else emptyList()
-            }
-
-            val queryTokens = q.split(tokenSplit).filter { it.length >= 2 }
-
-            // Gather name-match candidates: word-index intersection (all tokens present) ∪ substring.
-            val candidates = LinkedHashSet<Int>()
-            if (queryTokens.isNotEmpty() && wordIndex.isNotEmpty()) {
-                queryTokens.mapNotNull { wordIndex[it] }
-                    .reduceOrNull { a, b -> a.intersect(b) }
-                    ?.let { candidates.addAll(it) }
-            }
-            // Substring via linear scan (no trigram index — saves ~100MB peak heap on phone).
-            for (i in channels.indices) { if (lowerNames[i].contains(q)) candidates.add(i) }
-
-            fun relevance(name: String): Int = when {
-                name == q -> 0
-                name.startsWith(q) -> 1
-                name.split(tokenSplit).any { it.startsWith(q) } -> 2
-                name.contains(q) -> 3
-                else -> 4
-            }
-
-            return candidates.asSequence()
-                .map { channels[it] }
-                .filter { category == null || it.category == category }
-                .sortedWith(
-                    compareBy(
-                        { relevance(it.displayName.lowercase()) },
-                        { it.displayName.length },
-                        { it.displayName.lowercase() },
-                    ),
-                )
-                .toList()
-        }
-    }
-
-    @Volatile private var searchIndex: SearchIndex? = null
 
     private fun providerOf(type: SourceType): SourceProvider = SourceProvider.forType(type)
 
@@ -395,27 +329,24 @@ class ChannelRepository @Inject constructor(
         _isLoading.value = true
         val pm = PerformanceMonitor("ChannelLoad").also { it.start() }
 
-        // ── Phase 1a: cache I/O — emit to UI instantly, then index in background ──
-        pm.phaseStarted("cache_io")
+        // ── Step 1: load cache & emit to UI IMMEDIATELY ─────────────────
+        pm.phaseStarted("cache_load")
         val cached = cacheManager.load()
         if (cached != null && cached.isNotEmpty()) {
             _loadingPhase.value = LoadingPhase.CACHE
             _channels.value = cached
-            _searchable.value = cached
             _isLoading.value = false
-            Log.d("ChannelLoad", "cache: ${cached.size} channels")
         }
-        pm.phaseEnded("cache_io")
-        // ── Phase 1b: cache indexing — build incremental state + search indexes ──
-        pm.phaseStarted("cache_idx")
-        if (cached != null && cached.isNotEmpty()) {
-            incrementalMergeState.initializeFromChannels(cached)
-            searchIndex = SearchIndex(incrementalMergeState.channels)
-            _idIndex = buildIdIndex(incrementalMergeState.channels)
-        }
-        pm.phaseEnded("cache_idx")
+        pm.phaseEnded("cache_load")
 
-        // ── Step 2: discover enabled sources ──────────────────────────────
+        // ── Step 2: build incremental state in background ───────────────
+        // This must complete before any source can merge its results.
+        val initialState = if (cached != null && cached.isNotEmpty()) {
+            incrementalMergeState.apply { initializeFromChannels(cached) }
+            incrementalMergeState.channels
+        } else emptyList()
+
+        // ── Step 3: discover & launch ALL enabled sources in parallel ───
         data class SourceDef(
             val provider: SourceProvider,
             val timeoutMs: Long,
@@ -466,14 +397,12 @@ class ChannelRepository @Inject constructor(
 
         val defs = buildDefs()
         if (defs.isEmpty()) {
+            _channelRefreshTrigger.value++
             _loadingPhase.value = LoadingPhase.DONE
             _isLoading.value = false
             return@withContext
         }
 
-        // ── Step 3: launch sources in priority tiers ────────────────────
-        // Tier 0 (instant / no-network) runs first; Tier 1 and 2 run in
-        // parallel with progressive emission after each source completion.
         val totalSources = defs.size
         var completedSources = 0
 
@@ -487,7 +416,7 @@ class ChannelRepository @Inject constructor(
                     mergeSourceIntoState(def.provider)
                     clearAccumulator(def.provider)
                     val now = System.currentTimeMillis()
-                    if (now - lastEmitMs > 400L) { lastEmitMs = now; emitMergedState(rebuildIndex = false) }
+                    if (now - lastEmitMs > 400L) { lastEmitMs = now; emitMergedState() }
                 }
             } catch (e: Exception) {
                 Log.w("ChannelLoad", "${def.provider} failed: ${e.message}")
@@ -497,48 +426,33 @@ class ChannelRepository @Inject constructor(
             }
         }
 
-        // Tier 0: instant sources (no network) — run first for fast first content
-        pm.phaseStarted("tier0")
-        for (def in defs.filter { SourceProvider.canonicalOf(it.provider) in TIER_0 }) processDef(def)
-        pm.phaseEnded("tier0", "${incrementalMergeState.channels.size} channels")
-
-        // Tier 1 + 2: concurrent with semaphore
-        val tier12 = defs.filter { SourceProvider.canonicalOf(it.provider) !in TIER_0 }
-        pm.phaseStarted("tier12")
+        // ALL sources launch in parallel — no tiered sequencing.
+        pm.phaseStarted("source_fetch")
         coroutineScope {
-            for (def in tier12) {
+            for (def in defs) {
                 async { processDef(def) }
             }
         }
-        pm.phaseEnded("tier12", "${incrementalMergeState.channels.size} channels")
+        pm.phaseEnded("source_fetch", "${incrementalMergeState.channels.size} channels")
 
-        // ── Step 4: finalize ────────────────────────────────────────────
+        // ── Step 4: finalize — one sort + cache save ────────────────────
         pm.phaseStarted("finalize")
         val snapshot = incrementalMergeState.channels
-        val added = incrementalMergeState.addedCount
-        val updated = incrementalMergeState.updatedCount
         incrementalMergeState.release()
         val sorted = snapshot.sortedBy { sourceRank(it) }
         _channels.value = sorted
-        _searchable.value = sorted
-        // Only rebuild search index if channels actually changed — avoids OOM on phone
-        // with 52k channels when cache is already authoritative.
-        if (added > 0 || updated > 0) {
-            searchIndex = SearchIndex(sorted)
-            _idIndex = buildIdIndex(sorted)
-        }
+        _idIndex = sorted.associateBy { it.id }
         resetSourceResults()
-        System.gc()
 
-        // Progressive cache save — persist merged results even if mid-load kill
         coroutineScope {
             async { cacheManager.save(sorted) }
-            async { cacheManager.saveSearchable(sorted) }
             async { runCatching { premiumClient.runMaintenance() } }
             async { runCatching { smartCacheManager.runEvictionIfNeeded() } }
+            async { updateFtsIndex(sorted) }
         }
         pm.phaseEnded("finalize")
 
+        _channelRefreshTrigger.value++
         _loadingPhase.value = LoadingPhase.DONE
         _isLoading.value = false
         Log.d("ChannelLoad", "TOTAL ${pm.elapsed("finalize")}ms — ${sorted.size} channels from ${totalSources} sources")
@@ -592,14 +506,31 @@ class ChannelRepository @Inject constructor(
     }
 
     /** Emit the current merged state to the UI channels Flow. */
-    private fun emitMergedState(rebuildIndex: Boolean = true) {
-        val sorted = incrementalMergeState.channels.sortedBy { sourceRank(it) }
-        _channels.value = sorted
-        _searchable.value = sorted
-        if (rebuildIndex) {
-            searchIndex = SearchIndex(sorted)
-            _idIndex = buildIdIndex(sorted)
-        }
+    private fun emitMergedState() {
+        val snapshot = incrementalMergeState.channels
+        _channels.value = snapshot  // no sort — preserves insertion order during progressive loading
+        _idIndex = snapshot.associateBy { it.id }
+    }
+
+    /** Rebuild the Room FTS search index from the current channel catalogue. */
+    private suspend fun updateFtsIndex(channels: List<Channel>) {
+        if (channels.isEmpty()) return
+        try {
+            channelSearchDao.clearAll()
+            channels.chunked(200).forEach { chunk ->
+                channelSearchDao.insertAll(chunk.map { ch ->
+                    ChannelSearchFts(
+                        channelId = ch.id,
+                        displayName = ch.displayName,
+                        aliases = ch.aliases.joinToString(" "),
+                        category = ch.category ?: "",
+                        language = ch.language ?: "",
+                        country = ch.country ?: "",
+                        description = ch.description ?: "",
+                    )
+                })
+            }
+        } catch (_: Exception) { /* FTS update is best-effort */ }
     }
 
     private val sourceRankMap: Map<SourceType, Int> by lazy {
@@ -620,26 +551,6 @@ class ChannelRepository @Inject constructor(
      * Re‑run the full merge pipeline with the current accumulated raw results and emit
      * the updated catalogue to [channels] / [_channels].
      */
-    private suspend fun mergeAndEmit(rebuildIndex: Boolean = true) {
-        val raw = enrichAndMerge(
-            mergeQuick(dlhdResults, stmifyResults),
-            iptvResults,
-            freeTvResults,
-            radioResults,
-            fastTvResults,
-            premiumResults,
-            independentResults,
-            broadcasterResults,
-            freeLiveResults,
-        ).sortedBy { sourceRank(it) }
-        _channels.value = raw
-        _searchable.value = raw
-        if (rebuildIndex) {
-            searchIndex = SearchIndex(raw)
-            _idIndex = buildIdIndex(raw)
-        }
-    }
-
     /** Clear all accumulated raw source results — called before a fresh load. */
     private fun resetSourceResults() {
         dlhdResults = emptyList()
@@ -676,7 +587,6 @@ class ChannelRepository @Inject constructor(
      */
     suspend fun reload() {
         cacheManager.invalidate()
-        cacheManager.invalidateSearchable()
         lastSearchResults = emptyList()
         load()
     }
@@ -686,26 +596,37 @@ class ChannelRepository @Inject constructor(
     // ── Search across premium (DLHD + Stmify) + extended (IPTV/FreeTV/Radio/FastTV) ──
 
     suspend fun searchChannels(query: String, category: String? = null): List<Channel> = withContext(dispatchers.io) {
-        // Use the pre-built search index (15k+ channels) for O(query_tokens) matching.
-        val idx = searchIndex
         val q = query.lowercase().trim()
-        val indexed = if (idx != null) {
-            idx.search(query, category)
+        val pool = _channels.value
+        val localResults = if (q.isEmpty()) {
+            if (category != null) pool.filter { it.category == category } else emptyList<Channel>()
         } else {
-            // No index yet (very first moments of a cold start): scan whatever set exists.
-            val pool = if (_searchable.value.isNotEmpty()) _searchable.value else _channels.value
-            if (q.isEmpty()) {
-                if (category != null) pool.filter { it.category == category } else emptyList()
-            } else pool.filter {
-                it.displayName.lowercase().contains(q) && (category == null || it.category == category)
+            val ql = q
+            // Name matches — substring, ranked by relevance
+            val nameHits = pool.filter { ch ->
+                ch.displayName.lowercase().contains(ql) && (category == null || ch.category == category)
+            }.sortedWith(
+                compareBy<Channel> { name ->
+                    val n = name.displayName.lowercase()
+                    when {
+                        n == ql -> 0; n.startsWith(ql) -> 1
+                        n.split(Regex("""[\s\-/\.&']+""")).any { it.startsWith(ql) } -> 2
+                        else -> 3
+                    }
+                }.thenBy { it.displayName.length }.thenBy { it.displayName.lowercase() },
+            )
+            // Attribute matches — substring in category, language, country, aliases, description
+            val attrHits = pool.filter { ch ->
+                ch !in nameHits && (category == null || ch.category == category) && (
+                    ql in (ch.category?.lowercase() ?: "") ||
+                    ql in (ch.language?.lowercase() ?: "") ||
+                    ql in (ch.country?.lowercase() ?: "") ||
+                    ch.aliases.any { ql in it.lowercase() } ||
+                    ql in (ch.description?.lowercase() ?: "")
+                )
             }
+            nameHits + attrHits
         }
-        // Belt-and-suspenders: always include home matches too, so a channel that's
-        // already loaded is NEVER missing from search regardless of index freshness.
-        val browsableHits = if (q.isNotEmpty()) _channels.value.filter {
-            it.displayName.lowercase().contains(q) && (category == null || it.category == category)
-        } else emptyList()
-        val localResults = (indexed + browsableHits).distinctBy { it.id }
 
         val stmifyResults = if (sourcePreferences.isEnabled(SourceProvider.STMIFY))
             stmifyClient.searchChannels(query).getOrDefault(emptyList()) else emptyList()
@@ -716,11 +637,9 @@ class ChannelRepository @Inject constructor(
                 .also { lastSearchResults = it }
         }
         val stmifyMerged = stmifyResults.map { stm ->
-            val stmCanon = canonicalName(stm.name)
+            val stmCanon = ChannelCanonicalizer.canonicalize(stm.name, entityResolutionEngine.aliasDictionary).hashKey
             val existing = localResults.find { ch ->
-                // Match by canonical name (so "MBC 2" merges with an indexed "MBC 2 Ⓢ"), not a
-                // brittle substring check that left a duplicate clean "MBC 2" in the results.
-                canonicalName(ch.displayName) == stmCanon ||
+                ChannelCanonicalizer.canonicalize(ch.displayName, entityResolutionEngine.aliasDictionary).hashKey == stmCanon ||
                 ch.id == "stmify_${stm.id}" ||
                 ch.sources.values.any { it.referenceId == stm.id }
             }
@@ -762,8 +681,17 @@ class ChannelRepository @Inject constructor(
 
     /** All playable channels across ALL sources. Superset of [getCachedChannels]
      *  that includes every loaded source (IPTV-org, FreeTv, Radio, FAST TV, etc.). */
-    fun getAllChannels(): List<Channel> =
-        if (_searchable.value.isNotEmpty()) _searchable.value else _channels.value
+    fun getAllChannels(): List<Channel> = _channels.value
+
+    /**
+     * Returns the current ID-to-Channel index for O(1) lookups.  Callers that previously rebuilt a
+     * map via [channels].map { it.associateBy { it.id } } should use this instead — it avoids
+     * allocating a 52k-entry map on every emission.
+     *
+     * Note: the returned map includes channels whose sources may all be from disabled providers.
+     * Always cross-reference with [availableChannelIds] before returning a channel to the user.
+     */
+    fun getChannelByIdMap(): Map<String, Channel> = _idIndex
 
     suspend fun getChannelById(id: String): Channel? {
         val indexed = _idIndex[id]
@@ -787,650 +715,11 @@ class ChannelRepository @Inject constructor(
         return if (hasEnabledSource(ch, enabled)) ch else null
     }
 
-    private fun buildIdIndex(vararg pools: List<Channel>): Map<String, Channel> {
-        val map = mutableMapOf<String, Channel>()
-        for (pool in pools) {
-            for (ch in pool) { map.putIfAbsent(ch.id, ch) }
-        }
-        return map
-    }
-
     suspend fun getCategories(): List<String> =
         _channels.value.mapNotNull { it.category }.distinct().sorted()
 
-    // ── Merge helpers ────────────────────────────────────────────────────────
-
-    private fun mergeQuick(
-        dlhd: List<com.streamverse.core.data.model.DlhdChannel>,
-        stmify: List<com.streamverse.core.data.model.StmifyChannel>,
-    ): List<Channel> {
-        val merged = mutableMapOf<String, Channel>()
-        for (dl in dlhd) {
-            val stm = findMatchingStmify(dl.name, stmify)
-            val sources = mutableMapOf(SourceType.SPORTS_EVENTS to SourceInfo(type = SourceType.SPORTS_EVENTS, referenceId = dl.id))
-            if (stm != null) sources[SourceType.WORLD_TV] = SourceInfo(type = SourceType.WORLD_TV, referenceId = stm.id)
-            val rawCat = stm?.genres?.firstOrNull() ?: dl.category
-            val formattedName = ChannelNameFormatter.format(dl.name)
-            // When no raw category exists, infer from the channel name itself
-            val category = if (rawCat != null) {
-                CategoryNormalizer.normalize(rawCat, false)
-            } else {
-                CategoryNormalizer.fromChannelName(formattedName)
-            }
-            merged["dlhd_${dl.id}"] = Channel(
-                id = "dlhd_${dl.id}",
-                displayName = formattedName,
-                logoUrl = dl.logoUrl ?: stm?.logoUrl,
-                quality = stm?.quality ?: if (dl.name.contains("4K", true)) Quality._4K else null,
-                category = category,
-                language = null,
-                country = null,
-                description = stm?.description,
-                sources = sources,
-            )
-        }
-        for (st in stmify) {
-            if (merged.values.any { ch -> ch.sources.values.any { it.referenceId == st.id } }) continue
-            val stFormattedName = ChannelNameFormatter.format(st.name)
-            merged["stmify_${st.id}"] = Channel(
-                id = "stmify_${st.id}",
-                displayName = stFormattedName,
-                logoUrl = st.logoUrl,
-                quality = st.quality,
-                category = st.genres.firstOrNull()
-                    ?.let { CategoryNormalizer.normalize(it, false) }
-                    ?: CategoryNormalizer.fromChannelName(stFormattedName),
-                language = null,
-                country = null,
-                description = st.description,
-                sources = mapOf(SourceType.WORLD_TV to SourceInfo(type = SourceType.WORLD_TV, referenceId = st.id)),
-            )
-        }
-        return merged.values.toList()
-    }
-
-    private suspend fun enrichAndMerge(
-        existing: List<Channel>,
-        iptv: List<IptvChannel>,
-        freeTv: List<IptvChannel>,
-        radio: List<RadioStation>,
-        fastTv: List<FastChannel> = emptyList(),
-        premium: List<PremiumChannel> = emptyList(),
-        independent: List<IptvChannel> = emptyList(),
-        broadcaster: List<IptvChannel> = emptyList(),
-        freeLive: List<FreeChannel> = emptyList(),
-    ): List<Channel> {
-        // Collapse channels already in the base list that share a canonical name — e.g. "MBC 2" and
-        // "MBC 2 Ⓢ" arriving from two premium sources (DLHD + Stmify) that the quick matcher missed.
-        // Merge their sources under the CLEANEST display name (fewest decorative symbols).
-        val existingDeduped = run {
-            val m = LinkedHashMap<String, Channel>(existing.size)
-            for (ch in existing) {
-                val key = canonicalName(ch.displayName)
-                val prev = m[key]
-                m[key] = if (prev == null) ch else {
-                    val keep = if (decorationScore(ch.displayName) < decorationScore(prev.displayName)) ch else prev
-                    keep.copy(
-                        sources = prev.sources + ch.sources,
-                        logoUrl = keep.logoUrl ?: prev.logoUrl ?: ch.logoUrl,
-                        category = keep.category ?: prev.category ?: ch.category,
-                        country = keep.country ?: prev.country ?: ch.country,
-                        language = keep.language ?: prev.language ?: ch.language,
-                        quality = keep.quality ?: prev.quality ?: ch.quality,
-                    )
-                }
-            }
-            m.values.toList()
-        }
-        val byId = existingDeduped.associateBy { it.id }.toMutableMap()
-        // Build by-name map from existing + all IDs we create (so subsequent sources find matches).
-        val byNameLower = mutableMapOf<String, Channel>()
-        val byCanonicalName = mutableMapOf<String, Channel>()
-        val byWordIndex = mutableMapOf<String, MutableSet<String>>()
-        val byTvgId = mutableMapOf<String, Channel>()
-        existingDeduped.forEach { ch ->
-            val norm = ch.displayName.lowercase().trim()
-            byNameLower[norm] = ch
-            val canon = canonicalName(ch.displayName)
-            byCanonicalName[canon] = ch
-            ch.tvgId?.let { byTvgId[it.lowercase().trim()] = ch }
-            words(ch.displayName).forEach { w ->
-                byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-            }
-        }
-
-        fun qualityFrom(q: String?) = when (q) {
-            "4K" -> Quality._4K; "FHD" -> Quality.FHD; "HD" -> Quality.HD; "SD" -> Quality.SD; else -> null
-        }
-
-        // Enrich with IPTV-org data — the largest source (10k+ channels). Yield every 500 items
-        // so the coroutine stays cancellable during this long-running loop.
-        for ((idx, ip) in iptv.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
-            val norm = ip.name.lowercase().trim()
-            val canon = canonicalName(ip.name)
-            // O(1) lookups: exact normalized name → canonical name → no fuzzy fallback needed for most
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
-                ?: matchingEngine.findBestMatch(ip.name, null, ip.country, ip.language, emptyList(),
-                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
-            val ipInfo = SourceInfo(type = SourceType.IPTV, referenceId = ip.id, streamUrl = ip.streamUrl, headers = ip.headers, drmKeyId = ip.drmKeyId, drmKey = ip.drmKey)
-            if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.IPTV)) {
-                    val updated = existing2.copy(
-                        sources = existing2.sources + (SourceType.IPTV to ipInfo),
-                        country = existing2.country ?: ip.country,
-                        language = existing2.language ?: ip.language,
-                        logoUrl = existing2.logoUrl ?: ip.logoUrl,
-                        category = if (existing2.category == CategoryNormalizer.C.GENERAL)
-                            CategoryNormalizer.normalize(ip.category, false)
-                        else existing2.category,
-                    )
-                    byId[updated.id] = updated
-                    val upNorm = updated.displayName.lowercase().trim()
-                    byNameLower[upNorm] = updated
-                    val upCanon = canonicalName(updated.displayName)
-                    byCanonicalName[upCanon] = updated
-                }
-            } else {
-                val ch = Channel(
-                    id = "iptv_${ip.id}",
-                    displayName = ChannelNameFormatter.stripResolution(ip.name),
-                    logoUrl = ip.logoUrl,
-                    quality = qualityFrom(ip.quality),
-                    category = CategoryNormalizer.normalize(ip.category, false),
-                    language = ip.language,
-                    country = ip.country,
-                    description = null,
-                    sources = mapOf(SourceType.IPTV to ipInfo),
-                )
-                byId[ch.id] = ch
-                byNameLower[norm] = ch
-                byCanonicalName[canon] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-        // Enrich with FreeTv
-        for ((idx, ft) in freeTv.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
-            val norm = ft.name.lowercase().trim()
-            val canon = canonicalName(ft.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
-                ?: matchingEngine.findBestMatch(ft.name, null, ft.country, ft.language, emptyList(),
-                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
-            val ftInfo = SourceInfo(type = SourceType.FREE_TV, referenceId = ft.id, streamUrl = ft.streamUrl, headers = ft.headers, drmKeyId = ft.drmKeyId, drmKey = ft.drmKey)
-            if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.FREE_TV)) {
-                    val updated = existing2.copy(
-                        sources = existing2.sources + (SourceType.FREE_TV to ftInfo),
-                        country = existing2.country ?: ft.country,
-                        language = existing2.language ?: ft.language,
-                    )
-                    byId[updated.id] = updated
-                    val upNorm = updated.displayName.lowercase().trim()
-                    byNameLower[upNorm] = updated
-                    val upCanon = canonicalName(updated.displayName)
-                    byCanonicalName[upCanon] = updated
-                }
-            } else {
-                val ch = Channel(
-                    id = "freetv_${ft.id}",
-                    displayName = ChannelNameFormatter.stripResolution(ft.name),
-                    logoUrl = ft.logoUrl,
-                    quality = qualityFrom(ft.quality),
-                    category = CategoryNormalizer.normalize(ft.category, false),
-                    language = ft.language,
-                    country = ft.country,
-                    description = null,
-                    sources = mapOf(SourceType.FREE_TV to ftInfo),
-                )
-                byId[ch.id] = ch
-                byNameLower[norm] = ch
-                byCanonicalName[canon] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-        // Add radio channels (always "Radio" category). Deduplicate by canonical name so
-        // two radio‑browser entries for e.g. "BBC Radio 1" with different station UUIDs
-        // merge into one card with multiple stream URLs listed under SourceType.RADIO.
-        val radioByName = mutableMapOf<String, Channel>()   // canonicalName → Channel
-        for (r in radio) {
-            val displayName = ChannelNameFormatter.stripResolution(r.name)
-            val canon = canonicalName(displayName)
-            val existing = radioByName[canon]
-            if (existing != null) {
-                val newInfo = SourceInfo(type = SourceType.RADIO, referenceId = r.id, streamUrl = r.streamUrl)
-                if (newInfo !in existing.sources.values) {
-                    val updated = existing.copy(
-                        sources = existing.sources + (SourceType.RADIO to newInfo),
-                        logoUrl = existing.logoUrl ?: r.logoUrl,
-                        country = existing.country ?: r.country,
-                        language = existing.language ?: r.language,
-                    )
-                    radioByName[canon] = updated
-                    byId[updated.id] = updated
-                }
-            } else {
-                val radioId = "radio_${r.id}"
-                val ch = Channel(
-                    id = radioId,
-                    displayName = displayName,
-                    logoUrl = r.logoUrl,
-                    quality = null,
-                    category = CategoryNormalizer.C.RADIO,
-                    language = r.language,
-                    country = r.country,
-                    description = buildString {
-                        r.codec?.let { append(it) }
-                        r.bitrate?.let { if (isNotEmpty()) append(" "); append("${it}kbps") }
-                    }.ifBlank { null },
-                    sources = mapOf(SourceType.RADIO to SourceInfo(type = SourceType.RADIO, referenceId = r.id, streamUrl = r.streamUrl)),
-                )
-                radioByName[canon] = ch
-                byId[ch.id] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-// Enrich with FAST TV (Pluto TV, Samsung TV Plus, Plex, Roku)
-        // If a channel name matches an existing channel, add stream source; otherwise add as new.
-        for ((idx, fc) in fastTv.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
-            val norm = fc.name.lowercase().trim()
-            val canon = canonicalName(fc.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
-                ?: matchingEngine.findBestMatch(fc.name, null, fc.country, null, emptyList(),
-                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
-            val fcInfo = SourceInfo(
-                type = SourceType.FAST_TV,
-                referenceId = fc.id,
-                streamUrl = fc.streamUrl,
-                headers = fc.headers,
-                drmKeyId = fc.drmKeyId,
-                drmKey = fc.drmKey,
-            )
-            if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.FAST_TV)) {
-                    val updated = existing2.copy(
-                        sources  = existing2.sources + (SourceType.FAST_TV to fcInfo),
-                        country  = existing2.country ?: fc.country,
-                        logoUrl  = existing2.logoUrl ?: fc.logoUrl,
-                        category = if (existing2.category == CategoryNormalizer.C.GENERAL)
-                            CategoryNormalizer.normalize(fc.category, false) else existing2.category,
-                    )
-                    byId[updated.id] = updated
-                    byNameLower[norm] = updated
-                    val upCanon = canonicalName(updated.displayName)
-                    byCanonicalName[upCanon] = updated
-                }
-            } else {
-                val formattedName = ChannelNameFormatter.format(fc.name)
-                val ch = Channel(
-                    id          = "fast_${fc.id}",
-                    displayName = formattedName,
-                    logoUrl     = fc.logoUrl,
-                    quality     = null,
-                    category    = CategoryNormalizer.normalize(fc.category, false)
-                                          .let { if (it == CategoryNormalizer.C.GENERAL) CategoryNormalizer.fromChannelName(formattedName) else it },
-                    language    = null,
-                    country     = fc.country,
-                    description = null,
-                    sources     = mapOf(SourceType.FAST_TV to fcInfo),
-                )
-                byId[ch.id] = ch
-                byNameLower[norm] = ch
-                byCanonicalName[canon] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-        // Enrich with Premium channels (HBO, Showtime, Starz, sports, etc.)
-        for ((idx, pr) in premium.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
-            val norm = pr.name.lowercase().trim()
-            val canon = canonicalName(pr.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
-                ?: matchingEngine.findBestMatch(pr.name, null, pr.country, null, emptyList(),
-                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
-            val prInfo = SourceInfo(
-                type = SourceType.PREMIUM,
-                referenceId = pr.id,
-                streamUrl = pr.streamUrl,
-                headers = pr.headers,
-                drmKeyId = pr.drmKeyId,
-                drmKey = pr.drmKey,
-            )
-            if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.PREMIUM)) {
-                    val updated = existing2.copy(
-                        sources = existing2.sources + (SourceType.PREMIUM to prInfo),
-                        country = existing2.country ?: pr.country,
-                        logoUrl = existing2.logoUrl ?: pr.logoUrl,
-                        category = if (existing2.category == CategoryNormalizer.C.GENERAL)
-                            CategoryNormalizer.normalize(pr.category, false) else existing2.category,
-                    )
-                    byId[updated.id] = updated
-                    byNameLower[norm] = updated
-                    val upCanon = canonicalName(updated.displayName)
-                    byCanonicalName[upCanon] = updated
-                }
-            } else {
-                val formattedName = ChannelNameFormatter.format(pr.name)
-                val ch = Channel(
-                    id          = "prem_${pr.id}",
-                    displayName = formattedName,
-                    logoUrl     = pr.logoUrl,
-                    quality     = null,
-                    category    = CategoryNormalizer.normalize(pr.category, false)
-                        .let { if (it == CategoryNormalizer.C.GENERAL) CategoryNormalizer.fromChannelName(formattedName) else it },
-                    language    = null,
-                    country     = pr.country,
-                    description = null,
-                    sources     = mapOf(SourceType.PREMIUM to prInfo),
-                )
-                byId[ch.id] = ch
-                byNameLower[norm] = ch
-                byCanonicalName[canon] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-        // Enrich with Independent (curated verified-working free streams).
-        // Deduplicates by lowercase name against all existing entries.
-        for ((idx, ind) in independent.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
-            val norm = ind.name.lowercase().trim()
-            val canon = canonicalName(ind.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
-                ?: matchingEngine.findBestMatch(ind.name, null, ind.country, ind.language, emptyList(),
-                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
-            val indInfo = SourceInfo(
-                type = SourceType.VERIFIED,
-                referenceId = ind.id,
-                streamUrl = ind.streamUrl,
-            )
-            if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.VERIFIED)) {
-                    val updated = existing2.copy(
-                        sources = existing2.sources + (SourceType.VERIFIED to indInfo),
-                        country = existing2.country ?: ind.country,
-                        language = existing2.language ?: ind.language,
-                        logoUrl = existing2.logoUrl ?: ind.logoUrl,
-                    )
-                    byId[updated.id] = updated
-                    val upNorm = updated.displayName.lowercase().trim()
-                    byNameLower[upNorm] = updated
-                    val upCanon = canonicalName(updated.displayName)
-                    byCanonicalName[upCanon] = updated
-                }
-            } else {
-                val ch = Channel(
-                    id = "ind_${ind.id}",
-                    displayName = ChannelNameFormatter.stripResolution(ind.name),
-                    logoUrl = ind.logoUrl,
-                    quality = qualityFrom(ind.quality),
-                    category = CategoryNormalizer.normalize(ind.category, false),
-                    language = ind.language,
-                    country = ind.country,
-                    description = null,
-                    sources = mapOf(SourceType.VERIFIED to indInfo),
-                )
-                byId[ch.id] = ch
-                byNameLower[norm] = ch
-                byCanonicalName[canon] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-        // Enrich with Free Live TV (Pluto, Plex, Roku, Tubi, Xumo, Distro TV, Free-TV/IPTV).
-        for ((idx, fl) in freeLive.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
-            val norm = fl.name.lowercase().trim()
-            val canon = canonicalName(fl.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
-                ?: matchingEngine.findBestMatch(fl.name, null, fl.country, null, emptyList(),
-                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
-            val flInfo = SourceInfo(
-                type = SourceType.FREE_CHANNEL,
-                referenceId = fl.id,
-                streamUrl = fl.streamUrl,
-                headers = fl.headers,
-                drmKeyId = fl.drmKeyId,
-                drmKey = fl.drmKey,
-            )
-            if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.FREE_CHANNEL)) {
-                    val updated = existing2.copy(
-                        sources = existing2.sources + (SourceType.FREE_CHANNEL to flInfo),
-                        country = existing2.country ?: fl.country,
-                        logoUrl = existing2.logoUrl ?: fl.logoUrl,
-                        category = if (existing2.category == CategoryNormalizer.C.GENERAL)
-                            CategoryNormalizer.normalize(fl.category, false) else existing2.category,
-                    )
-                    byId[updated.id] = updated
-                    byNameLower[norm] = updated
-                    val upCanon = canonicalName(updated.displayName)
-                    byCanonicalName[upCanon] = updated
-                }
-            } else {
-                val formattedName = ChannelNameFormatter.format(fl.name)
-                val ch = Channel(
-                    id = "free_${fl.id}",
-                    displayName = formattedName,
-                    logoUrl = fl.logoUrl,
-                    quality = null,
-                    category = CategoryNormalizer.normalize(fl.category, false)
-                        .let { if (it == CategoryNormalizer.C.GENERAL) CategoryNormalizer.fromChannelName(formattedName) else it },
-                    language = null,
-                    country = fl.country,
-                    description = null,
-                    sources = mapOf(SourceType.FREE_CHANNEL to flInfo),
-                )
-                byId[ch.id] = ch
-                byNameLower[norm] = ch
-                byCanonicalName[canon] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-        // Enrich with Broadcaster (direct FTA satellite & broadcaster CDN feeds).
-        for ((idx, bc) in broadcaster.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
-            val norm = bc.name.lowercase().trim()
-            val canon = canonicalName(bc.name)
-            val existing2 = byNameLower[norm] ?: byCanonicalName[canon]
-                ?: matchingEngine.findBestMatch(bc.name, null, bc.country, bc.language, emptyList(),
-                    byTvgId, byId, byCanonicalName, byWordIndex)?.channel
-            val bcInfo = SourceInfo(
-                type = SourceType.BROADCASTER,
-                referenceId = bc.id,
-                streamUrl = bc.streamUrl,
-                headers = bc.headers,
-                drmKeyId = bc.drmKeyId,
-                drmKey = bc.drmKey,
-            )
-            if (existing2 != null) {
-                if (!existing2.sources.containsKey(SourceType.BROADCASTER)) {
-                    val updated = existing2.copy(
-                        sources = existing2.sources + (SourceType.BROADCASTER to bcInfo),
-                        country = existing2.country ?: bc.country,
-                        language = existing2.language ?: bc.language,
-                        logoUrl = existing2.logoUrl ?: bc.logoUrl,
-                    )
-                    byId[updated.id] = updated
-                    val upNorm = updated.displayName.lowercase().trim()
-                    byNameLower[upNorm] = updated
-                    val upCanon = canonicalName(updated.displayName)
-                    byCanonicalName[upCanon] = updated
-                }
-            } else {
-                val formattedName = ChannelNameFormatter.format(bc.name)
-                val ch = Channel(
-                    id = "bc_${bc.id}",
-                    displayName = formattedName,
-                    logoUrl = bc.logoUrl,
-                    quality = qualityFrom(bc.quality),
-                    category = CategoryNormalizer.normalize(bc.category, false)
-                        .let { if (it == CategoryNormalizer.C.GENERAL) CategoryNormalizer.fromChannelName(formattedName) else it },
-                    language = bc.language,
-                    country = bc.country,
-                    description = null,
-                    sources = mapOf(SourceType.BROADCASTER to bcInfo),
-                )
-                byId[ch.id] = ch
-                byNameLower[norm] = ch
-                byCanonicalName[canon] = ch
-                words(ch.displayName).forEach { w ->
-                    byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
-                }
-            }
-        }
-
-        return byId.values.asSequence()
-            .filter { !isAdultChannel(it) }
-            .toList()
-    }
-
-    /** Normalize a name for matching: lowercase, strip quality/resolution suffixes. */
-    /**
-     * Canonical key for matching the SAME channel across sources, regardless of cosmetic
-     * differences. Robust to special characters so e.g. "MBC 2", "MBC2", "MBC-2", "MBC 2 ᴴᴰ",
-     * "MBC 2 (HD)", "MBC 2 ®", "ＭＢＣ ②" all collapse to "mbc2" and merge into one multi-source entry.
-     *
-     * Distinct channels stay distinct ("MBC 2 News" → "mbc2news" ≠ "mbc2").
-     */
-    private fun canonicalName(name: String): String {
-        // NFD (canonical decomposition) folds accents (é→e) but, unlike NFKD, leaves decorative
-        // symbols like Ⓢ / ᴴᴰ / ® as symbols so the alphanumeric filter STRIPS them (NFKD would turn
-        // Ⓢ into the letter "s", wrongly producing "mbc2s" ≠ "mbc2").
-        var s = java.text.Normalizer.normalize(name, java.text.Normalizer.Form.NFD)
-            .replace(Regex("\\p{Mn}+"), "")        // strip accents / combining marks
-            .lowercase()
-        // Drop bracketed quality/resolution tags anywhere: (1080p) [hd] {4k} …
-        s = s.replace(
-            Regex("""[\(\[\{]\s*(?:\d{3,4}[pi]|4k|fhd|uhd|hdr|hd|sd)\s*[\)\]\}]""", RegexOption.IGNORE_CASE),
-            " ",
-        )
-        // Reduce to alphanumerics — collapses spaces, dashes, dots, bullets, symbols, emoji…
-        val alnum = s.replace(Regex("[^a-z0-9]"), "")
-        // Guard: a pure non-Latin name (Arabic/Chinese/…) would strip to empty and then ALL such
-        // channels would collide on "" and wrongly merge. Keep a collapsed form for those instead.
-        if (alnum.length < 2) {
-            return s.replace(Regex("\\s+"), " ").trim()
-        }
-        // Drop a quality suffix that got glued on (e.g. "mbc2hd" → "mbc2"), but never to <2 chars.
-        val trimmed = alnum.replace(Regex("""(?:fhd|uhd|hdr|hd|sd|4k|2160p|1080p|720p|480p|360p)$"""), "")
-        return if (trimmed.length >= 2) trimmed else alnum
-    }
-
-    /** How "decorated" a name is — count of non-alphanumeric, non-space chars (symbols like Ⓢ ® ™).
-     *  Lower = cleaner; used to pick the nicest display name when merging duplicate channels. */
-    private fun decorationScore(name: String): Int =
-        name.count { !it.isLetterOrDigit() && !it.isWhitespace() }
-
-    /**
-     * Channel match by word-level fuzzy matching — fallback when exact name and canonical
-     * lookups fail.
-     *
-     * Extracts significant words (≥3 chars, not in COMMON_WORDS) from the query name, finds
-     * all existing channels that share at least one such word via the pre-built word index,
-     * then scores each candidate by Jaccard‑like word overlap.  Returns the best match if
-     * the overlap meets the same 50% threshold used by [findMatchingStmify].
-     *
-     * The word index is built once and maintained incrementally during enrichAndMerge, so
-     * this is O(k) where k ≈ query‑words × channels‑per‑word — typically <200 — never a full
-     * scan.  It only fires for the minority of entries where exact/canonical matching misses.
-     */
-    private fun findByNameFuzzyFast(
-        name: String,
-        byCanonicalName: Map<String, Channel>,
-        byWordIndex: Map<String, Set<String>>,
-        byId: Map<String, Channel>,
-    ): Channel? {
-        // Also try canonical (the second fallback in the chain already does this, but
-        // keeping it here keeps the method self-contained for reuse).
-        byCanonicalName[canonicalName(name)]?.let { return it }
-
-        val queryWords = words(name)
-        if (queryWords.isEmpty()) return null
-
-        // Gather candidate IDs that share at least one significant word
-        val candidateIds = mutableSetOf<String>()
-        for (w in queryWords) {
-            byWordIndex[w]?.let { candidateIds.addAll(it) }
-        }
-
-        // Score each candidate by word overlap (≥50 % of the smaller word‑set)
-        return candidateIds.asSequence()
-            .mapNotNull { byId[it] }
-            .maxByOrNull { ch ->
-                val chWords = words(ch.displayName)
-                val common = queryWords.intersect(chWords)
-                val threshold = (minOf(queryWords.size, chWords.size) * 0.5f).toInt().coerceAtLeast(1)
-                if (common.size >= threshold) common.size else 0
-            }
-    }
-
-    /**
-     * Multi-signal channel matching that uses the [LogicalChannelMatcher] as a fallback when
-     * exact-name and canonical-name lookups fail. Also checks tvgId which the old pipeline
-     * entirely ignores for dedup purposes.
-     */
-    private fun findMatchMultiSignal(
-        name: String,
-        tvgId: String?,
-        country: String?,
-        language: String?,
-        byTvgId: Map<String, Channel>,
-        byId: Map<String, Channel>,
-    ): Channel? {
-        if (tvgId != null) {
-            byTvgId[tvgId.lowercase().trim()]?.let { return it }
-        }
-        val candidates = byId.values
-        return candidates.firstOrNull { ch ->
-            channelMatcher.findMatch(name, tvgId, country, language, emptyList(), listOf(ch))
-                ?.takeIf { it.confidence >= 0.55f } != null
-        }
-    }
-
-    /** Extract significant words from a display name — used by [findByNameFuzzyFast]. */
-    private fun words(name: String): Set<String> = name.lowercase()
-        .split(Regex("""[\s\-_./&]+"""))
-        .filter { it.length >= 3 && it !in COMMON_WORDS }
-        .toSet()
-
-    private fun findMatchingStmify(
-        dlhdName: String,
-        stmify: List<com.streamverse.core.data.model.StmifyChannel>,
-    ): com.streamverse.core.data.model.StmifyChannel? {
-        val normalized = dlhdName.lowercase().trim()
-        return stmify.firstOrNull { st ->
-            val stName = st.name.lowercase().trim()
-            stName == normalized || stName.contains(normalized) || normalized.contains(stName) ||
-            fuzzyMatch(normalized, stName)
-        }
-    }
-
-    private fun fuzzyMatch(a: String, b: String): Boolean {
-        val aWords = a.split(" ", "/", "-").filter { it.length > 2 }.toSet()
-        val bWords = b.split(" ", "/", "-").filter { it.length > 2 }.toSet()
-        val common = aWords.intersect(bWords)
-        return common.size >= (minOf(aWords.size, bWords.size) * 0.5).toInt().coerceAtLeast(1)
-    }
 }
+
+
+
+

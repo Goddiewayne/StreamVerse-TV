@@ -1,5 +1,6 @@
 package com.streamverse.core.data.source.provider
 
+import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.domain.model.SourceType
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -37,31 +38,79 @@ class ProviderRegistry @Inject constructor() {
 
     // ── Priority ────────────────────────────────────────────────────────────
 
-    fun priority(type: SourceType): Int =
-        priorityMap[SourceType.canonicalOf(type)] ?: Int.MAX_VALUE
+    /** Optional user-defined priority order from Settings. */
+    private var priorityOverride: Map<SourceType, Int>? = null
+
+    /** Apply a custom provider ordering (from Settings). Clears override when empty. */
+    fun setPriorityOverride(order: List<SourceProvider>) {
+        priorityOverride = if (order.isEmpty()) null else buildPriorityOverride(order)
+    }
+
+    /** Build a priority map from a user-ordered list of SourceProviders. */
+    private fun buildPriorityOverride(order: List<SourceProvider>): Map<SourceType, Int> {
+        val result = mutableMapOf<SourceType, Int>()
+        order.forEachIndexed { index, provider ->
+            val types = sourceTypesForProvider(provider)
+            for (type in types) {
+                // Only override if this SourceType exists in the default map
+                if (type in priorityMap) {
+                    result[type] = index
+                }
+            }
+        }
+        return result
+    }
+
+    /** Map a SourceProvider to its canonical SourceType(s), including deprecated aliases. */
+    private fun sourceTypesForProvider(provider: SourceProvider): List<SourceType> = when (provider) {
+        SourceProvider.VERIFIED, SourceProvider.INDEPENDENT -> listOf(SourceType.VERIFIED, SourceType.INDEPENDENT)
+        SourceProvider.BROADCASTER -> listOf(SourceType.BROADCASTER)
+        SourceProvider.IPTV -> listOf(SourceType.IPTV)
+        SourceProvider.FREE_TV -> listOf(SourceType.FREE_TV)
+        SourceProvider.FAST_TV -> listOf(SourceType.FAST_TV)
+        SourceProvider.FREE_CHANNEL -> listOf(SourceType.FREE_CHANNEL)
+        SourceProvider.SPORTS_EVENTS, SourceProvider.DLHD -> listOf(SourceType.SPORTS_EVENTS, SourceType.DLHD)
+        SourceProvider.WORLD_TV, SourceProvider.STMIFY -> listOf(SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM)
+        SourceProvider.PREMIUM -> listOf(SourceType.PREMIUM)
+        SourceProvider.RADIO -> listOf(SourceType.RADIO)
+    }
+
+    fun priority(type: SourceType): Int {
+        val canonical = SourceType.canonicalOf(type)
+        return priorityOverride?.get(canonical)
+            ?: priorityMap[canonical]
+            ?: Int.MAX_VALUE
+    }
 
     fun priorityScore(type: SourceType): Float {
         val canonical = SourceType.canonicalOf(type)
-        return when (canonical) {
-            SourceType.VERIFIED -> 40f
-            SourceType.BROADCASTER -> 38f
-            SourceType.FREE_CHANNEL -> 36f
-            SourceType.SPORTS_EVENTS -> 30f
-            SourceType.WORLD_TV -> 28f
-            SourceType.PREMIUM -> 25f
-            SourceType.FAST_TV -> 20f
-            SourceType.IPTV -> 15f
-            SourceType.FREE_TV -> 14f
-            SourceType.RADIO -> 5f
-            // Deprecated types resolved above — unreachable
-            SourceType.INDEPENDENT, SourceType.DLHD,
-            SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM -> 0f
+        return if (priorityOverride != null) {
+            (priorityOverride!![canonical] ?: Int.MAX_VALUE).toFloat()
+        } else {
+            when (canonical) {
+                SourceType.VERIFIED -> 40f
+                SourceType.BROADCASTER -> 38f
+                SourceType.FREE_CHANNEL -> 36f
+                SourceType.SPORTS_EVENTS -> 30f
+                SourceType.WORLD_TV -> 28f
+                SourceType.PREMIUM -> 25f
+                SourceType.FAST_TV -> 20f
+                SourceType.IPTV -> 15f
+                SourceType.FREE_TV -> 14f
+                SourceType.RADIO -> 5f
+                // Deprecated types resolved above — unreachable
+                SourceType.INDEPENDENT, SourceType.DLHD,
+                SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM -> 0f
+            }
         }
     }
 
-    fun prioritySorted(): List<SourceType> = priorityMap.entries
-        .sortedBy { it.value }
-        .map { it.key }
+    fun prioritySorted(): List<SourceType> {
+        val map = priorityOverride ?: priorityMap
+        return map.entries
+            .sortedBy { it.value }
+            .map { it.key }
+    }
 
     // ── SourceType convenience ───────────────────────────────────────────────
 

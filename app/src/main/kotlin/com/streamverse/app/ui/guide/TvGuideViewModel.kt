@@ -2,6 +2,7 @@ package com.streamverse.app.ui.guide
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.ProgrammeRepository
 import com.streamverse.core.domain.model.Channel
@@ -32,6 +33,7 @@ data class TvGuideUiState(
 class TvGuideViewModel @Inject constructor(
     private val repository: ChannelRepository,
     private val programmeRepo: ProgrammeRepository,
+    private val healthEngine: ChannelHealthEngine,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TvGuideUiState())
@@ -42,11 +44,13 @@ class TvGuideViewModel @Inject constructor(
             combine(
                 repository.channels,
                 repository.loadingPhase,
-            ) { channels, phase ->
-                Pair(channels, phase)
-            }.collect { (allChannels, _) ->
+                healthEngine.liveChannelIds,
+            ) { channels, phase, liveIds ->
+                Triple(channels, phase, liveIds)
+            }.collect { (allChannels, _, liveIds) ->
                 if (allChannels.isEmpty()) return@collect
-                loadGuideData(allChannels)
+                val liveOnly = if (liveIds.isNotEmpty()) allChannels.filter { it.id in liveIds } else allChannels
+                loadGuideData(liveOnly)
             }
         }
 
@@ -99,7 +103,7 @@ class TvGuideViewModel @Inject constructor(
             try {
                 repository.load()
                 delay(500)
-                val allChannels = repository.getCachedChannels()
+                val allChannels = repository.getCachedChannels().filter { it.id in healthEngine.liveChannelIds.value }
                 if (allChannels.isNotEmpty()) loadGuideData(allChannels)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(

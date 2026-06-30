@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import com.streamverse.core.data.local.ChannelSearchDao
 import com.streamverse.core.data.local.FavoriteDao
 import com.streamverse.core.data.local.StreamVerseDatabase
 import com.streamverse.core.data.remote.dlhd.DlhdClient
@@ -107,6 +108,9 @@ object CoreModule {
     fun provideFavoriteDao(database: StreamVerseDatabase): FavoriteDao = database.favoriteDao()
 
     @Provides @Singleton
+    fun provideChannelSearchDao(database: StreamVerseDatabase): ChannelSearchDao = database.channelSearchDao()
+
+    @Provides @Singleton
     fun provideDlhdClient(gson: Gson, dispatchers: StreamVerseDispatchers): DlhdClient = DlhdClient(gson, dispatchers)
 
     @Provides @Singleton
@@ -181,13 +185,15 @@ object CoreModule {
         metadataAggregator: MetadataAggregator,
         registryInitializer: SourceRegistryInitializer,
         providerRegistry: ProviderRegistry,
+        channelSearchDao: ChannelSearchDao,
         @ApplicationContext appContext: Context,
     ): ChannelRepository = ChannelRepository(
         dlhdClient, stmifyClient, iptvClient, freeTvClient,
         radioBrowserClient, fastTvClient, premiumClient,
         independentClient, broadcasterClient, freeLiveClient,
         cacheManager, smartCacheManager, sourcePreferences,
-        dispatchers, sourceRegistry, channelMatcher, metadataAggregator, registryInitializer, providerRegistry, appContext,
+        dispatchers, sourceRegistry, channelMatcher, metadataAggregator,
+        registryInitializer, providerRegistry, channelSearchDao, appContext,
     )
 
     @Provides @Singleton

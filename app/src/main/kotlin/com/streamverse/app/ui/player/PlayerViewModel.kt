@@ -2,6 +2,9 @@ package com.streamverse.app.ui.player
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.streamverse.core.data.ChannelHealthEngine
+import com.streamverse.core.data.PlaybackSessionManager
+import com.streamverse.core.data.SourceHealth
 import com.streamverse.core.data.SourceHealthPreferences
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.data.SourceProvider
@@ -9,11 +12,15 @@ import com.streamverse.core.data.WatchHistoryPreferences
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.SourceType
+import com.streamverse.core.util.PlaybackPreloader
+import com.streamverse.core.util.SourceResolutionEngine
+import com.streamverse.core.util.SourceSelector
 import com.streamverse.core.util.StreamInfo
 import com.streamverse.core.util.StreamPreResolver
 import com.streamverse.core.util.StreamResolver
-import com.streamverse.core.util.SourceResolutionEngine
+import androidx.media3.exoplayer.ExoPlayer
 import dagger.hilt.android.lifecycle.HiltViewModel
+import android.app.Application
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,6 +78,7 @@ data class PlayerUiState(
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
+    private val application: Application,
     private val repository: ChannelRepository,
     private val streamResolver: StreamResolver,
     private val streamPreResolver: StreamPreResolver,
@@ -78,10 +86,25 @@ class PlayerViewModel @Inject constructor(
     private val sourceHealth: SourceHealthPreferences,
     private val sourcePreferences: SourcePreferences,
     private val sourceResolutionEngine: SourceResolutionEngine,
+    private val channelHealthEngine: ChannelHealthEngine,
+    private val sourceSelector: SourceSelector,
+    private val sessionManager: PlaybackSessionManager,
+    private val playbackPreloader: PlaybackPreloader,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
+
+    private val _sourceHealthStates = MutableStateFlow<Map<SourceType, SourceHealth>>(emptyMap())
+    val sourceHealthStates: StateFlow<Map<SourceType, SourceHealth>> = _sourceHealthStates.asStateFlow()
+
+    /** A pre-built ExoPlayer (already at STATE_READY) for the next channel.
+     *  Set by [open] when [PlaybackPreloader] has one cached; consumed by
+     *  [ExoPlayerPlayer] which takes ownership. */
+    private val _takenPlayer = MutableStateFlow<ExoPlayer?>(null)
+    val takenPlayer: StateFlow<ExoPlayer?> = _takenPlayer.asStateFlow()
+
+    private var dataSaverEnabled = sourcePreferences.isDataSaverEnabled()
 
     private var pendingUrls: MutableList<StreamInfo> = mutableListOf()
     private var currentChannelId: String? = null
@@ -93,8 +116,6 @@ class PlayerViewModel @Inject constructor(
     // Smart cross-source fallback: the ordered list of source types to try for the current
     // channel and how far down it we are. If a source can't start, we advance to the next; only
     // when every source has failed does the channel resolve to the no-signal static.
-    private var sourceChain: List<SourceType> = emptyList()
-    private var sourceChainPos: Int = 0
     // Every source that has been attempted (including the currently playing one). Reset on
     // explicit channel/source switch. Used to skip already-tried sources when advancing.
     private val triedSources = mutableSetOf<SourceType>()
@@ -105,25 +126,40 @@ class PlayerViewModel @Inject constructor(
     // can switch sources. A mid-playback error shows the error/static, never auto-advances.
     @Volatile private var sourceHasEverPlayed = false
 
-    private companion object {
-        // Default play order when a channel has multiple sources: curated/verified first, then
-        // premium, then the scraped open sources.
-        val SOURCE_PRIORITY = listOf(
-            SourceType.VERIFIED, SourceType.INDEPENDENT,
-            SourceType.BROADCASTER,
-            SourceType.SPORTS_EVENTS, SourceType.DLHD,
-            SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
-            SourceType.IPTV, SourceType.FREE_TV, SourceType.FAST_TV,
-            SourceType.FREE_CHANNEL,
-            SourceType.PREMIUM,
-            SourceType.RADIO,
-        )
+    // Validation recovery: if a manually selected source fails validation within the
+    // timeout, auto-recover to the default verified source.
+    private var validationRecoveryJob: kotlinx.coroutines.Job? = null
 
+    private var healthJob: kotlinx.coroutines.Job? = null
+
+    private fun observeSourceHealth(channelId: String) {
+        healthJob?.cancel()
+        _sourceHealthStates.value = channelHealthEngine.sourceHealthForChannel(channelId)
+        healthJob = viewModelScope.launch {
+            channelHealthEngine.sourceHealthUpdates.collect { updates ->
+                _sourceHealthStates.value = updates[channelId] ?: emptyMap()
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        playbackPreloader.releaseAll()
+        _takenPlayer.value?.release()
+        _takenPlayer.value = null
+    }
+
+    private companion object {
         // How long a source gets to actually start playing before fallback gives up on it. Covers a
         // dead URL that hangs or a source stuck retrying — not just hard errors.
         // Increased from 10s to 25s to give slow CDNs time to respond and prevent premature
         // source switching when the stream starts playing but the watchdog hasn't been cancelled.
         const val CONNECT_TIMEOUT_MS = 25_000L
+
+        // How long a manually selected source gets to start playing before we auto-recover
+        // to the default verified source. Separate from connect timeout because it gates the
+        // full "validation" window, not just the initial connection.
+        const val VALIDATION_TIMEOUT_MS = 15_000L
     }
 
     /**
@@ -138,7 +174,44 @@ class PlayerViewModel @Inject constructor(
             return
         }
         _uiState.value = _uiState.value.copy(active = true)
-        loadChannel(id, seamless = canSwapSeamlessly())
+        viewModelScope.launch {
+            // Fast path: if there's a pre-built (already prepared) player for this channel,
+            // use it directly — no loading, no spinner, instant playback.
+            val channel = repository.getChannelById(id)
+            val preloaded = channel?.let { c ->
+                val type = sourceSelector.selectDefaultVerifiedSource(c).type
+                playbackPreloader.take(c.id, type)
+            }
+            if (preloaded != null && channel != null) {
+                currentChannel = channel
+                currentChannelId = id
+                buildSurfList(channel)
+                resetFallbackState()
+                watchHistory.record(channel.id, channel.displayName, channel.logoUrl)
+                val options = buildSourceOptions(channel)
+                _uiState.value = _uiState.value.copy(
+                    channel = channel,
+                    availableSources = options,
+                    canSurf = surfChannels.size >= 2,
+                    guideChannels = buildGuideList(),
+                    isLoading = false,
+                    error = null,
+                )
+                _takenPlayer.value = preloaded.player
+                // Pre-load the next batch for the channel surfed to.
+                if (!dataSaverEnabled) {
+                    streamPreResolver.preResolveAll(channel)
+                    preloadNeighborPlayers(application, channel)
+                }
+                return@launch
+            }
+            loadChannel(id, seamless = canSwapSeamlessly())
+        }
+    }
+
+    /** Called by the composable after it takes ownership of [takenPlayer]. */
+    fun clearTakenPlayer() {
+        _takenPlayer.value = null
     }
 
     // Tracks whether WE auto-paused for background, so foregrounding only resumes our own pause
@@ -165,9 +238,44 @@ class PlayerViewModel @Inject constructor(
     fun close() {
         connectWatchdog?.cancel()
         connectWatchdog = null
+        cancelValidationRecovery()
         currentChannel = null
         currentChannelId = null
+        sessionManager.clearSession()
         _uiState.value = PlayerUiState(active = false, isLoading = false)
+    }
+
+    /**
+     * Start the validation recovery timer for a manually selected source.
+     * If the source doesn't reach "playing" state within VALIDATION_TIMEOUT_MS,
+     * auto-recover to the default verified source and show a brief message.
+     */
+    private fun startValidationRecovery(channel: Channel) {
+        cancelValidationRecovery()
+        validationRecoveryJob = viewModelScope.launch {
+            delay(VALIDATION_TIMEOUT_MS)
+            if (sessionManager.getSelectionMode() == PlaybackSessionManager.SourceSelectionMode.MANUAL &&
+                !sessionManager.isSourceValidated()) {
+                val defaultSource = sessionManager.recoverToDefault()
+                if (defaultSource != null) {
+                    android.util.Log.d("PlayerViewModel", "validationRecovery: manual source failed, recovering to default $defaultSource")
+                    sessionManager.recordFailover(
+                        sessionManager.getCurrentPlaybackSource() ?: SourceType.VERIFIED,
+                        defaultSource,
+                        "validation_timeout",
+                        wasUserSelection = true,
+                    )
+                    resetFallbackState()
+                    resolveAndPlay(channel, defaultSource, seamless = canSwapSeamlessly())
+                    _uiState.value = _uiState.value.copy(error = "Source unavailable — switched back")
+                }
+            }
+        }
+    }
+
+    private fun cancelValidationRecovery() {
+        validationRecoveryJob?.cancel()
+        validationRecoveryJob = null
     }
 
     private fun loadChannel(id: String, seamless: Boolean = false) {
@@ -219,21 +327,21 @@ class PlayerViewModel @Inject constructor(
                         canSurf = surfChannels.size >= 2,
                         guideChannels = buildGuideList(),
                     )
-                    // Initialise the smart fallback chain
-                    sourceChain = options.map { it.type }
-                    sourceChainPos = 0
                     currentSourceConnected = false
                     connectWatchdog?.cancel()
                     connectWatchdog = null
-                    // Smart default: open the source that last actually PLAYED this channel (avoids
-                    // "dead on arrival" launches). Fall back to top-priority when there's no memory.
-                    // Any failure still triggers the watchdog's cross-source failover below.
-                    val preferredProvider = sourceHealth.lastGoodSource(id)
-                        ?.let { SourceProvider.forType(it) }
-                    val startType = options.firstOrNull { SourceProvider.forType(it.type) == preferredProvider }
-                        ?.type
-                        ?: options.first().type
-                    resolveAndPlay(channel, startType, seamless)
+                    // Observe per-source health for reactive UI
+                    observeSourceHealth(id)
+                    // Pre-resolve ALL sources in parallel so failover is instant.
+                    // (Skipped in data-saver mode to avoid background HTTP requests.)
+                    if (!dataSaverEnabled) {
+                        streamPreResolver.preResolveAll(channel)
+                        preloadNeighborPlayers(application, channel)
+                    }
+                    // Intelligent default: use verified-playable source first, then fallback.
+                    val selection = sourceSelector.selectDefaultVerifiedSource(channel)
+                    sessionManager.startSession(channel, selection.type)
+                    resolveAndPlay(channel, selection.type, seamless)
                 }
             } catch (e: Exception) {
                 val msg = if (e is kotlinx.coroutines.CancellationException) "Cancelled" else e.message ?: "Failed"
@@ -273,10 +381,34 @@ class PlayerViewModel @Inject constructor(
      */
     private fun preResolveNeighbors() {
         if (surfChannels.size < 2) return
+        if (dataSaverEnabled) return  // no background network activity on metered connections
         val n = surfChannels.size
         val idx = surfChannels.indexOfFirst { it.id == currentChannelId }.coerceAtLeast(0)
         streamPreResolver.preResolve(surfChannels[(idx + 1) % n])
         streamPreResolver.preResolve(surfChannels[(idx - 1 + n) % n])
+    }
+
+    /**
+     * Pre-build and prepare ExoPlayer instances for the surf neighbours so the next
+     * ◀/▶ flip is instant — the player is already at STATE_READY with decoders
+     * initialised.  Best-effort; failures are silently ignored.
+     */
+    private fun preloadNeighborPlayers(app: Application, current: Channel) {
+        if (surfChannels.size < 2) return
+        if (_takenPlayer.value != null) return
+        if (dataSaverEnabled) return  // no pre-buffering on metered connections
+        val n = surfChannels.size
+        val idx = surfChannels.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
+        val next = surfChannels[(idx + 1) % n]
+        val prev = surfChannels[(idx - 1 + n) % n]
+        viewModelScope.launch {
+            val typeNext = sourceSelector.selectDefaultVerifiedSource(next).type
+            playbackPreloader.preload(app, next, typeNext)
+        }
+        viewModelScope.launch {
+            val typePrev = sourceSelector.selectDefaultVerifiedSource(prev).type
+            playbackPreloader.preload(app, prev, typePrev)
+        }
     }
 
     /** Surf to the previous (−1) or next (+1) channel in-place, like flipping channels. */
@@ -295,18 +427,23 @@ class PlayerViewModel @Inject constructor(
     /** Reset cross-source fallback tracking for a fresh channel/source selection. */
     private fun resetFallbackState() {
         triedSources.clear()
-        sourceChainPos = 0
         sourceHasEverPlayed = false
         currentSourceConnected = false
         connectWatchdog?.cancel()
         connectWatchdog = null
+        cancelValidationRecovery()
     }
 
-    /** User picked a source for the current channel — switch (or reload) in place. */
+    /** User picked a source for the current channel — switch (or reload) in place.
+     *  The selection is marked as MANUAL in the session manager. If the source fails
+     *  validation (doesn't start playing within the timeout), auto-recover to the
+     *  default verified source. */
     fun selectSource(type: SourceType) {
         val channel = currentChannel ?: return
         val seamless = canSwapSeamlessly()
         resetFallbackState()
+        sessionManager.markSourceSelected(type, PlaybackSessionManager.SourceSelectionMode.MANUAL)
+        startValidationRecovery(channel)
         viewModelScope.launch {
             withContext(NonCancellable) { resolveAndPlay(channel, type, seamless) }
         }
@@ -345,9 +482,6 @@ class PlayerViewModel @Inject constructor(
         } else {
             _uiState.value.copy(isLoading = true, error = null, selectedSource = type)
         }
-        // Build the full source chain for this channel — all available sources in priority order
-        // starting from the selected type, wrapping around so every source gets a fair try.
-        sourceChain = buildFallbackChain(channel)
         triedSources.add(type)
         val info = channel.sources[type]
         if (info == null) {
@@ -380,34 +514,27 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
-     * Build the ordered list of sources to try for fallback, in priority order, avoiding any
-     * that have already been attempted in this session.
-     */
-    private fun buildFallbackChain(channel: Channel): List<SourceType> {
-        val seen = mutableSetOf<com.streamverse.core.data.SourceProvider>()
-        return SOURCE_PRIORITY.filter { type ->
-            val provider = com.streamverse.core.data.SourceProvider.forType(type)
-            channel.sources.containsKey(type) && seen.add(provider) && type !in triedSources
-        }
-    }
-
-    /**
-     * Advance to the next untried source in the chain. Returns false if no sources remain.
-     * When exhausted, the channel resolves to no-signal static.
+     * Advance to the next untried source in the chain — safe failover.
+     * Uses [SourceSelector.selectForFailover] which prefers verified-playable sources.
+     * Only falls back to unverified sources when no verified source remains.
+     * Returns false if no sources remain → channel resolves to no-signal static.
      */
     private suspend fun advanceToNextSource(): Boolean {
         val ch = currentChannel ?: return false
-        // The current source is being abandoned — forget it as this channel's preferred default so
-        // we don't keep opening a source that no longer works.
         val failing = _uiState.value.selectedSource
-        if (failing != null) sourceHealth.recordFailure(ch.id, failing)
-        // Rebuild chain excluding already-tried sources
-        sourceChain = buildFallbackChain(ch)
-        if (sourceChain.isEmpty()) return false
-        sourceChainPos = 0
-        val nextType = sourceChain[0]
-        android.util.Log.d("PlayerViewModel", "advanceToNextSource: falling back to $nextType")
-        resolveAndPlay(ch, nextType, seamless = canSwapSeamlessly())
+        if (failing != null) {
+            sourceHealth.recordFailure(ch.id, failing)
+            channelHealthEngine.recordPlaybackFailure(ch.id, failing, "advanceToNextSource")
+        }
+        val failoverSelection = sourceSelector.selectForFailover(ch, failing ?: SourceType.VERIFIED, triedSources)
+        if (failoverSelection == null) return false
+        triedSources.add(failoverSelection.type)
+        sessionManager.markSourceSelected(failoverSelection.type, PlaybackSessionManager.SourceSelectionMode.FAILOVER)
+        if (failing != null) {
+            sessionManager.recordFailover(failing, failoverSelection.type, "playback_failure")
+        }
+        android.util.Log.d("PlayerViewModel", "advanceToNextSource: safe failover to ${failoverSelection.type} confidence=${failoverSelection.confidence}")
+        resolveAndPlay(ch, failoverSelection.type, seamless = canSwapSeamlessly())
         return true
     }
 
@@ -557,10 +684,30 @@ class PlayerViewModel @Inject constructor(
             currentSourceConnected = true
             connectWatchdog?.cancel()
             connectWatchdog = null
+            // Complete validation in session manager — source is confirmed working.
+            sessionManager.markValidationComplete(success = true)
+            cancelValidationRecovery()
             // Remember this source as the known-good default for this channel next time.
             val id = currentChannelId
             val type = _uiState.value.selectedSource
-            if (id != null && type != null) sourceHealth.recordSuccess(id, type)
+            if (id != null && type != null) {
+                sourceHealth.recordSuccess(id, type)
+                channelHealthEngine.recordPlaybackSuccess(id, type)
+            }
+            // Recalculate default source (health may have changed), but never interrupt
+            // a working manual selection.
+            val channel = currentChannel
+            if (channel != null) {
+                val updated = sourceSelector.recalculateDefault(
+                    channel,
+                    sessionManager.getCurrentPlaybackSource(),
+                    sessionManager.getSelectionMode() == PlaybackSessionManager.SourceSelectionMode.MANUAL,
+                    true,
+                )
+                if (updated != null) {
+                    sessionManager.updateDefaultSource(updated.type)
+                }
+            }
         }
     }
 
@@ -568,11 +715,37 @@ class PlayerViewModel @Inject constructor(
         android.util.Log.d("PlayerViewModel", "onPlayerError: $errorMessage")
         connectWatchdog?.cancel()
         connectWatchdog = null
+        // Mark validation as failed in session manager.
+        sessionManager.markValidationComplete(success = false)
+        cancelValidationRecovery()
         // If the source previously played successfully, don't auto-advance — the user decides
         // whether to switch sources or retry.
         if (sourceHasEverPlayed) {
             _uiState.value = _uiState.value.copy(error = errorMessage, isLoading = false)
             return
+        }
+        // If this was a manual selection that failed before playing, recover to default.
+        if (sessionManager.getSelectionMode() == PlaybackSessionManager.SourceSelectionMode.MANUAL &&
+            !sessionManager.isSourceValidated()) {
+            val channel = currentChannel
+            if (channel != null) {
+                val defaultSource = sessionManager.recoverToDefault()
+                if (defaultSource != null) {
+                    android.util.Log.d("PlayerViewModel", "onPlayerError: manual source failed before play, recovering to $defaultSource")
+                    sessionManager.recordFailover(
+                        sessionManager.getCurrentPlaybackSource() ?: SourceType.VERIFIED,
+                        defaultSource,
+                        "manual_source_error",
+                        wasUserSelection = true,
+                    )
+                    resetFallbackState()
+                    viewModelScope.launch {
+                        resolveAndPlay(channel, defaultSource, seamless = canSwapSeamlessly())
+                        _uiState.value = _uiState.value.copy(error = "Source unavailable — switched back")
+                    }
+                    return
+                }
+            }
         }
         // Initial-connection phase: try the next source before surrendering.
         viewModelScope.launch {

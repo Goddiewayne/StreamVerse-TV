@@ -41,8 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.streamverse.app.ui.theme.CyberCyan
 import com.streamverse.app.ui.theme.NavyCard
-import com.streamverse.core.data.sourceProviderCount
-import com.streamverse.core.domain.model.Channel
+import com.streamverse.core.domain.model.ChannelSummary
 import com.streamverse.core.domain.model.Quality
 
 /**
@@ -55,7 +54,7 @@ val LocalLiveChannels = androidx.compose.runtime.staticCompositionLocalOf { empt
 
 @Composable
 fun ChannelCard(
-    channel: Channel,
+    channel: ChannelSummary,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     isFavorite: Boolean = false,
@@ -129,8 +128,6 @@ fun ChannelCard(
                 }
             }
 
-            // LIVE badge (top-left, like broadcast) — only when the Channel Health Engine has
-            // verified the channel is currently available.
             val isLive = LocalLiveChannels.current.contains(channel.id)
             if (isLive) {
                 LiveBadge(
@@ -140,8 +137,6 @@ fun ChannelCard(
                 )
             }
 
-            // Bottom-left: quality + multi-source indicator.
-            val sourceCount = remember(channel.sources) { channel.sourceProviderCount() }
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -150,7 +145,7 @@ fun ChannelCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 channel.quality?.let { QualityBadge(quality = it) }
-                if (sourceCount > 1) SourceCountBadge(count = sourceCount)
+                if (channel.sourceCount > 1) SourceCountBadge(count = channel.sourceCount)
             }
 
             if (onToggleFavorite != null) {

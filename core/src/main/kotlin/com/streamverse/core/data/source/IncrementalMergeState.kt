@@ -26,14 +26,11 @@ data class SourceItem(
 )
 
 class IncrementalMergeState(
-    private val matchingEngine: ChannelMatchingEngine,
+    private val entityResolutionEngine: EntityResolutionEngine,
     private val metadataAggregator: MetadataAggregator,
 ) {
     private val byId = LinkedHashMap<String, Channel>()
-    private val byNameLower = HashMap<String, String>()
-    private val byCanonicalName = HashMap<String, String>()
     private val byWordIndex = HashMap<String, MutableSet<String>>()
-    private val byTvgId = HashMap<String, String>()
     private val dirtySources = mutableSetOf<SourceType>()
 
     var addedCount = 0; private set
@@ -42,14 +39,14 @@ class IncrementalMergeState(
     val channels: List<Channel> get() = synchronized(this) { byId.values.toList() }
 
     fun release() = synchronized(this) {
-        byId.clear(); byNameLower.clear(); byCanonicalName.clear()
-        byWordIndex.clear(); byTvgId.clear(); dirtySources.clear()
+        byId.clear(); byWordIndex.clear(); dirtySources.clear()
+        entityResolutionEngine.clear()
     }
 
     fun initializeFromChannels(chs: List<Channel>) = synchronized(this) {
-        byId.clear(); byNameLower.clear(); byCanonicalName.clear()
-        byWordIndex.clear(); byTvgId.clear()
-        dirtySources.clear(); addedCount = 0; updatedCount = 0
+        byId.clear(); byWordIndex.clear(); dirtySources.clear()
+        entityResolutionEngine.clear()
+        addedCount = 0; updatedCount = 0
         for (ch in chs) addToIndexes(ch)
     }
 
@@ -63,8 +60,9 @@ class IncrementalMergeState(
         val radioByName = mutableMapOf<String, Channel>()
         for (r in items) {
             val displayName = ChannelNameFormatter.stripResolution(r.name)
-            val canon = canonicalName(displayName)
-            val existing = radioByName[canon] ?: byCanonicalName[canon]?.let { byId[it] }
+            val canon = ChannelCanonicalizer.canonicalize(displayName, entityResolutionEngine.aliasDictionary)
+            val existing = radioByName[canon.hashKey]
+                ?: entityResolutionEngine.findIdByHashKey(canon.hashKey)?.let { byId[it] }
             if (existing != null) {
                 val newInfo = SourceInfo(type = SourceType.RADIO, referenceId = r.id, streamUrl = r.streamUrl)
                 if (newInfo !in existing.sources.values) {
@@ -76,7 +74,7 @@ class IncrementalMergeState(
                     )
                     byId[updated.id] = updated; updateIndexes(updated); updatedCount++
                 }
-                radioByName[canon] = byId[existing.id] ?: existing
+                radioByName[canon.hashKey] = byId[existing.id] ?: existing
             } else {
                 val radioId = "radio_${r.id}"
             val ch = Channel(
@@ -89,7 +87,7 @@ class IncrementalMergeState(
                     }.ifBlank { null },
                     sources = mapOf(SourceType.RADIO to SourceInfo(type = SourceType.RADIO, referenceId = r.id, streamUrl = r.streamUrl)),
                 )
-                addToIndexes(ch); addedCount++; radioByName[canon] = ch
+                addToIndexes(ch); addedCount++; radioByName[canon.hashKey] = ch
             }
         }
         dirtySources.add(SourceType.RADIO)
@@ -100,11 +98,11 @@ class IncrementalMergeState(
         for ((idx, item) in items.withIndex()) {
             if (idx % 500 == 0 && idx > 0) yield()
             val norm = item.name.lowercase().trim()
-            val canon = canonicalName(item.name)
+            val itemCanonical = ChannelCanonicalizer.canonicalize(item.name, entityResolutionEngine.aliasDictionary)
             val existing: Channel? = synchronized(this) {
-                byNameLower[norm]?.let { byId[it] }
-                    ?: byCanonicalName[canon]?.let { byId[it] }
-                    ?: item.tvgId?.let { byTvgId[it.lowercase().trim()]?.let { id -> byId[id] } }
+                entityResolutionEngine.findIdByExactName(norm)?.let { byId[it] }
+                    ?: entityResolutionEngine.findIdByHashKey(itemCanonical.hashKey)?.let { byId[it] }
+                    ?: item.tvgId?.let { entityResolutionEngine.findIdByTvgId(it.lowercase().trim()) }?.let { byId[it] }
             }
             val info = SourceInfo(
                 type = sourceType, referenceId = item.id,
@@ -125,9 +123,10 @@ class IncrementalMergeState(
                     synchronized(this) { byId[updated.id] = updated; updateIndexes(updated); localUpdated++ }
                 }
             } else {
+                val displayName = ChannelNameFormatter.stripResolution(item.name)
                 val newCh = Channel(
                     id = "${sourceType.name.lowercase().substringBefore("_")}_${item.id}",
-                    displayName = ChannelNameFormatter.stripResolution(item.name),
+                    displayName = displayName,
                     logoUrl = item.logoUrl?.intern(),
                     quality = qualityFrom(item.quality),
                     category = CategoryNormalizer.normalize(item.category, false)?.intern(),
@@ -151,9 +150,12 @@ class IncrementalMergeState(
 
     private fun addToIndexes(ch: Channel) {
         byId[ch.id] = ch
-        byNameLower[ch.displayName.lowercase().trim()] = ch.id
-        byCanonicalName[canonicalName(ch.displayName)] = ch.id
-        ch.tvgId?.let { byTvgId[it.lowercase().trim()] = ch.id }
+        val canon = ChannelCanonicalizer.canonicalize(ch.displayName, entityResolutionEngine.aliasDictionary)
+        entityResolutionEngine.indexChannel(
+            id = ch.id, canonical = canon,
+            tvgId = ch.tvgId, country = ch.country,
+            displayName = ch.displayName,
+        )
         words(ch.displayName).forEach { w ->
             byWordIndex.getOrPut(w) { mutableSetOf() }.add(ch.id)
         }
@@ -161,22 +163,20 @@ class IncrementalMergeState(
 
     private fun updateIndexes(ch: Channel) {
         val old = byId[ch.id] ?: return
-        val oldNorm = old.displayName.lowercase().trim()
-        byNameLower.remove(oldNorm)
-        byCanonicalName.remove(canonicalName(old.displayName))
+        val oldCanon = ChannelCanonicalizer.canonicalize(old.displayName, entityResolutionEngine.aliasDictionary)
+        entityResolutionEngine.removeChannel(
+            id = ch.id, oldCanonical = oldCanon,
+            oldTvgId = old.tvgId, oldCountry = old.country,
+            oldDisplayName = old.displayName,
+        )
+        val norm = ch.displayName.lowercase().trim()
         byId[ch.id] = ch
-        byNameLower[ch.displayName.lowercase().trim()] = ch.id
-        byCanonicalName[canonicalName(ch.displayName)] = ch.id
-    }
-
-    private fun canonicalName(name: String): String {
-        var s = java.text.Normalizer.normalize(name, java.text.Normalizer.Form.NFD)
-            .replace(RE_MARKS, "").lowercase()
-        s = s.replace(RE_RES_TAG, " ")
-        val alnum = s.replace(RE_NON_ALNUM, "")
-        if (alnum.length < 2) return s.replace(RE_SPACES, " ").trim()
-        return alnum.replace(RE_QUALITY_SUFFIX, "")
-            .let { if (it.length >= 2) it else alnum }
+        val newCanon = ChannelCanonicalizer.canonicalize(ch.displayName, entityResolutionEngine.aliasDictionary)
+        entityResolutionEngine.indexChannel(
+            id = ch.id, canonical = newCanon,
+            tvgId = ch.tvgId, country = ch.country,
+            displayName = ch.displayName,
+        )
     }
 
     private fun words(name: String): Set<String> = name.lowercase()
@@ -184,11 +184,6 @@ class IncrementalMergeState(
         .filter { it.length >= 3 && it !in COMMON_WORDS }.toSet()
 
     companion object {
-        private val RE_MARKS = Regex("\\p{Mn}+")
-        private val RE_RES_TAG = Regex("""[\(\[\{]\s*(?:\d{3,4}[pi]|4k|fhd|uhd|hdr|hd|sd)\s*[\)\]\}]""", RegexOption.IGNORE_CASE)
-        private val RE_NON_ALNUM = Regex("[^a-z0-9]")
-        private val RE_SPACES = Regex("\\s+")
-        private val RE_QUALITY_SUFFIX = Regex("""(?:fhd|uhd|hdr|hd|sd|4k|2160p|1080p|720p|480p|360p)$""")
         private val RE_WORD_SPLIT = Regex("""[\s\-_./&]+""")
         private val COMMON_WORDS = setOf(
             "tv", "hd", "sd", "4k", "fhd", "uhd", "hdr", "the", "and", "for", "via",

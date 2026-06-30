@@ -76,16 +76,22 @@ data class HomeSection(
     val title: String,
     val subtitle: String? = null,
     val type: SectionType,
-    val channels: List<Channel>,
-    val events: List<LiveEvent> = emptyList(),
+    val channels: List<Channel> = emptyList(),
     val programmes: List<ChannelProgramme> = emptyList(),
+    val trending: List<TrendingChannel> = emptyList(),
+    val events: List<LiveEvent> = emptyList(),
+    val headlines: List<NewsHeadline> = emptyList(),
+    val scores: List<LiveScore> = emptyList(),
 )
 
 enum class SectionType {
-    HERO, CONTINUE_WATCHING, FEATURED_EVENTS, CATEGORY,
-    WHATS_ON_NOW, MINI_GUIDE, TRENDING, NEWS_CENTRE,
-    SPORTS_CENTRE, REGIONAL_HUB, FAVOURITES, RECOMMENDATIONS,
-    KIDS, MUSIC, RECENTLY_ADDED,
+    HERO_BANNER, CONTINUE_WATCHING, LIVE_EVENTS, TRENDING,
+    EDITOR_PICKS, POPULAR_IN_REGION, BECAUSE_YOU_WATCH,
+    POPULAR_WORLDWIDE, TOP_NEWS, TOP_SPORTS, TOP_ENTERTAINMENT,
+    TOP_MOVIES, TOP_DOCUMENTARIES, KIDS, MUSIC,
+    RECENTLY_ADDED, FAVOURITES, RECOMMENDATIONS, CATEGORY_BROWSING,
+    HERO, FEATURED_EVENTS, WHATS_ON_NOW, MINI_GUIDE,
+    NEWS_CENTRE, SPORTS_CENTRE, REGIONAL_HUB, CATEGORY,
 }
 
 data class TimeOfDay(

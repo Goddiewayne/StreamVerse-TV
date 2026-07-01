@@ -51,6 +51,7 @@ jobs:
           git config user.name "Merge Bot"
           git config user.email "bot@streamverse.tv"
           git add merged.json
+          if [ -d logos ]; then git add logos/; fi
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else

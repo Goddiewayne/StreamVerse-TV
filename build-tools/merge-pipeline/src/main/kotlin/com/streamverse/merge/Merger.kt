@@ -407,6 +407,7 @@ private data class SourceItem(
 // ── Stmify (WordPress REST API) DTOs ────────────────────────────────────────
 
 private data class StmifyTitle(val rendered: String)
+private data class StmifyContent(val rendered: String)
 private data class StmifyExcerpt(val rendered: String)
 private data class StmifyMediaSize(@SerializedName("source_url") val sourceUrl: String)
 private data class StmifyMediaDetails(val sizes: Map<String, StmifyMediaSize>?)
@@ -423,6 +424,7 @@ private data class StmifyPostDto(
     val id: Int,
     val slug: String,
     val title: StmifyTitle?,
+    val content: StmifyContent?,
     val excerpt: StmifyExcerpt?,
     @SerializedName("_embedded") val embedded: StmifyEmbedded?,
 )
@@ -446,45 +448,7 @@ private data class StreamDbEntry(
     val quality: String? = null,
 )
 
-/**
- * Fetches the full Stmify streams database (one call covers all countries/channels).
- * Returns a map of UPPER_KEBAB key → StreamDbEntry for streaming lookups.
- */
-private fun fetchStreamDb(gson: Gson): Map<String, StreamDbEntry> = try {
-    // fetch_streams.php requires X-Requested-With (AJAX check) to bypass Cloudflare.
-    val curlCmd = if (System.getProperty("os.name").lowercase().contains("windows")) "curl.exe" else "curl"
-    val pb = ProcessBuilder(
-        curlCmd, "-s", "-L", "--max-time", "30",
-        "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "-H", "Accept: application/json,text/html",
-        "-H", "X-Requested-With: XMLHttpRequest",
-        "https://cdn.stmify.com/embed-free/fetch_streams.php"
-    )
-    pb.redirectErrorStream(true)
-    val proc = pb.start()
-    val body = proc.inputStream.bufferedReader().readText()
-    val exitCode = proc.waitFor()
-    if (exitCode != 0) throw RuntimeException("curl exit code $exitCode")
-    if (body.startsWith("{\"error\"")) throw RuntimeException(body)
-    // The response is a flat JSON object keyed by UPPER_KEBAB identifiers.
-    val root = JsonParser.parseString(body).asJsonObject
-    root.entrySet().associate { (key, value) ->
-        val obj = value.asJsonObject
-        key to StreamDbEntry(
-            url = obj.get("url")?.takeIf { it.isJsonPrimitive }?.asString,
-            k1 = obj.get("k1")?.takeIf { it.isJsonPrimitive }?.asString,
-            k2 = obj.get("k2")?.takeIf { it.isJsonPrimitive }?.asString,
-            quality = obj.get("quality")?.takeIf { it.isJsonPrimitive }?.asString,
-        )
-    }
-} catch (e: Exception) {
-    System.err.println("  WARN: Stream DB fetch failed: ${e.message}")
-    emptyMap()
-}
 
-/** Derive the streams-DB lookup key from a Stmify slug or PrimeVideo key. */
-private fun streamDbKey(refId: String): String =
-    refId.uppercase().replace("-", "_")
 
 // ── WORLD_TV Fetch Functions ───────────────────────────────────────────────
 
@@ -507,30 +471,106 @@ private fun curlFetch(url: String, accept: String = "application/json"): String 
     return output
 }
 
-private fun fetchStmifyChannels(gson: Gson, streamDb: Map<String, StreamDbEntry>): List<SourceItem> {
+/**
+ * Fetches the country-specific stream DB (or global if country is empty).
+ * Merged into the mutable map passed in [streamDb].
+ */
+private fun fetchStreamDbForCountry(gson: Gson, streamDb: MutableMap<String, StreamDbEntry>, country: String = "") {
+    val url = if (country.isEmpty()) "https://cdn.stmify.com/embed-free/fetch_streams.php"
+        else "https://cdn.stmify.com/embed-free/fetch_streams.php?country=$country"
+    try {
+        val curlCmd = if (System.getProperty("os.name").lowercase().contains("windows")) "curl.exe" else "curl"
+        val pb = ProcessBuilder(curlCmd, "-s", "-L", "--max-time", "30",
+            "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "-H", "Accept: application/json,text/html",
+            "-H", "X-Requested-With: XMLHttpRequest", url)
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        val body = proc.inputStream.bufferedReader().readText()
+        val exitCode = proc.waitFor()
+        if (exitCode != 0) throw RuntimeException("curl exit code $exitCode")
+        if (body.startsWith("{\"error\"")) throw RuntimeException(body)
+        val root = JsonParser.parseString(body).asJsonObject
+        for ((key, value) in root.entrySet()) {
+            if (key !in streamDb) {
+                val obj = value.asJsonObject
+                streamDb[key] = StreamDbEntry(
+                    url = obj.get("url")?.takeIf { it.isJsonPrimitive }?.asString,
+                    k1 = obj.get("k1")?.takeIf { it.isJsonPrimitive }?.asString,
+                    k2 = obj.get("k2")?.takeIf { it.isJsonPrimitive }?.asString,
+                    quality = obj.get("quality")?.takeIf { it.isJsonPrimitive }?.asString,
+                )
+            }
+        }
+    } catch (e: Exception) {
+        System.err.println("  WARN: Stream DB fetch ($country) failed: ${e.message}")
+    }
+}
+
+private fun fetchStmifyChannels(gson: Gson, streamDb: MutableMap<String, StreamDbEntry>): List<SourceItem> {
     val baseUrl = "https://stmify.com"
     val apiBase = "$baseUrl/wp-json/wp/v2"
-    val items = mutableListOf<SourceItem>()
+    val allPosts = mutableListOf<StmifyPostDto>()
 
-    // curlFetch works on networks where OkHttp/JDK get blocked by Cloudflare
+    // Fetch all posts from the WordPress API (including content field for embed parsing)
     for (page in 1..50) {
         val url = "$apiBase/live-tv?per_page=100&page=$page&_embed=wp:featuredmedia,wp:term"
         val dtos = try {
             val body = curlFetch(url)
             gson.fromJson<List<StmifyPostDto>>(body, object : TypeToken<List<StmifyPostDto>>() {}.type)
         } catch (e: Exception) {
-            if (items.isEmpty()) System.err.println("  WARN: Stmify page $page error: ${e.message}")
+            if (allPosts.isEmpty()) System.err.println("  WARN: Stmify page $page error: ${e.message}")
             break
         }
         if (dtos.isEmpty()) break
-        items.addAll(dtos.map { it.toSourceItem(baseUrl, streamDb) })
+        allPosts.addAll(dtos)
         if (dtos.size < 100) break
     }
 
-    if (items.isEmpty()) {
+    if (allPosts.isEmpty()) {
         System.err.println("  WARN: Stmify API returned no data, skipping WORLD_TV")
+        return emptyList()
     }
-    return items
+
+    // Collect unique countries from post content and fetch their stream DBs
+    val countries = allPosts.mapNotNull { post ->
+        EMBED_RE.find(post.content?.rendered.orEmpty())?.groupValues?.get(2)
+    }.distinct()
+    if (countries.isNotEmpty()) {
+        println("  Stmify countries: $countries")
+        for (c in countries) {
+            val before = streamDb.size
+            fetchStreamDbForCountry(gson, streamDb, c)
+            val added = streamDb.size - before
+            if (added > 0) println("    $c: +$added stream entries")
+        }
+    }
+
+    // Convert posts to SourceItems using the merged stream DB
+    return allPosts.map { it.toSourceItem(baseUrl, streamDb) }
+}
+
+/** Stream DB key derived from a WordPress slug or embed slug. */
+private fun streamDbKey(refId: String): String =
+    refId.uppercase().replace("-", "_")
+
+/** Regex matching the Stmify embed iframe URL, capturing embed slug and country. */
+private val EMBED_RE = Regex("cdn\\.stmify\\.com/embed-free/v1/(.+?)-([a-z]{2})-[a-z0-9]")
+
+/** Look up stream DB, trying both the raw slug key and the embed-slug-derived key. */
+private fun resolveStreamEntry(slug: String, contentHtml: String?, streamDb: Map<String, StreamDbEntry>): StreamDbEntry? {
+    // 1) Try direct slug → stream key (e.g. "al-jazeera" → "AL_JAZEERA")
+    streamDb[streamDbKey(slug)]?.url?.let { return streamDb[streamDbKey(slug)] }
+    // 2) Parse embed URL from post content to derive the real stream key
+    if (contentHtml != null) {
+        val m = EMBED_RE.find(contentHtml)
+        if (m != null) {
+            val embedSlug = m.groupValues[1]
+            val entry = streamDb[streamDbKey(embedSlug)]
+            if (entry?.url != null) return entry
+        }
+    }
+    return null
 }
 
 private fun StmifyPostDto.toSourceItem(baseUrl: String, streamDb: Map<String, StreamDbEntry>): SourceItem {
@@ -540,7 +580,7 @@ private fun StmifyPostDto.toSourceItem(baseUrl: String, streamDb: Map<String, St
             ?.firstOrNull { (k, _) -> k.contains("medium") || k.contains("large") }
             ?.value?.sourceUrl
     val genres = embedded?.terms?.flatten().orEmpty().map { it.name }
-    val streamEntry = streamDb[streamDbKey(slug)]
+    val streamEntry = resolveStreamEntry(slug, content?.rendered, streamDb)
     return SourceItem(
         id = slug,
         name = title?.rendered?.trim().orEmpty(),
@@ -582,6 +622,45 @@ private fun fetchPrimeVideoChannels(gson: Gson, streamDb: Map<String, StreamDbEn
     } catch (e: Exception) {
         System.err.println("  WARN: PrimeVideo API error: ${e.message}, skipping")
         return emptyList()
+    }
+}
+
+// ── Logo Re-hosting ──────────────────────────────────────────────────────────
+// Download logos from Cloudflare-protected origins (stmify.com) and serve them
+// from the same GitHub Pages site as merged.json, so Android emulators can load
+// them without hitting Cloudflare WAF.
+
+private fun rehostLogos(items: MutableList<SourceItem>, baseUrl: String, outDir: String) {
+    val logosDir = File(outDir, "logos")
+    logosDir.mkdirs()
+    val toDownload = items.mapNotNull { it.logoUrl }.distinct()
+        .filter { "stmify.com" in it || "stmify" in it }
+    if (toDownload.isEmpty()) return
+    val urlMap = mutableMapOf<String, String>()
+    var ok = 0; var fail = 0
+    for (url in toDownload) {
+        val ext = url.substringAfterLast('.', "jpg").substringBefore("?")
+        val name = url.hashCode().toUInt().toString(16)
+        val filename = "logo_$name.$ext"
+        val dest = File(logosDir, filename)
+        if (dest.exists() && dest.length() > 0L) { urlMap[url] = "$baseUrl/logos/$filename"; ok++; continue }
+        try {
+            val curlCmd = if (System.getProperty("os.name").lowercase().contains("windows")) "curl.exe" else "curl"
+            val pb = ProcessBuilder(curlCmd, "-s", "-L", "--max-time", "15",
+                "-o", dest.absolutePath,
+                "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "-H", "Accept: image/webp,image/*,*/*", url)
+            pb.redirectErrorStream(true); val proc = pb.start()
+            if (proc.waitFor() == 0 && dest.length() > 0L) {
+                urlMap[url] = "$baseUrl/logos/$filename"; ok++
+            } else { dest.delete(); fail++ }
+        } catch (e: Exception) { fail++ }
+    }
+    if (ok > 0 || fail > 0) println("  Logo rehost: $ok OK, $fail failed")
+    for (i in items.indices) {
+        val old = items[i].logoUrl ?: continue
+        val newUrl = urlMap[old] ?: continue
+        items[i] = items[i].copy(logoUrl = newUrl)
     }
 }
 
@@ -635,7 +714,8 @@ fun main(args: Array<String>) {
     // These are not in channels.json, so we fetch them directly from the APIs.
     // The CI runner can access stmify.com (unlike Android emulators behind Cloudflare).
     println("Fetching stream database (pre-resolved stream URLs) ...")
-    val streamDb = fetchStreamDb(gson)
+    val streamDb = mutableMapOf<String, StreamDbEntry>()
+    fetchStreamDbForCountry(gson, streamDb) // global DB
     println("  Stream DB entries: ${streamDb.size}")
 
     println("Fetching WORLD_TV sources (Stmify + PrimeVideo) ...")
@@ -646,6 +726,7 @@ fun main(args: Array<String>) {
         val worldTvList = byType.getOrPut(SourceType.WORLD_TV) { mutableListOf() }
         worldTvList.addAll(stmifyItems)
         worldTvList.addAll(primeItems)
+        rehostLogos(worldTvList, baseUrl, outDir)
     }
 
     // ── merge in priority order ─────────────────────────────────────────────

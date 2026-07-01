@@ -33,11 +33,12 @@ class MergedIndexClient @Inject constructor(
         runCatching {
             val url = "$baseUrl/merged.json"
             val req = Request.Builder().url(url).get().build()
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful) return@runCatching null
-            val body = resp.body?.string() ?: return@runCatching null
-            val parsed = gson.fromJson(body, MergedResponse::class.java)
-            parsed.channels
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@runCatching null
+                val body = resp.body?.string() ?: return@runCatching null
+                val parsed = gson.fromJson(body, MergedResponse::class.java)
+                parsed.channels
+            }
         }.getOrNull()
     }
 }

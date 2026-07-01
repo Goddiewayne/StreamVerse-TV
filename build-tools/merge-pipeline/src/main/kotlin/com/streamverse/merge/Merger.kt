@@ -427,6 +427,7 @@ private data class StmifyPostDto(
     val content: StmifyContent?,
     val excerpt: StmifyExcerpt?,
     @SerializedName("_embedded") val embedded: StmifyEmbedded?,
+    @SerializedName("class_list") val classList: List<String>? = null,
 )
 
 // ── PrimeVideo DTOs ────────────────────────────────────────────────────────
@@ -532,23 +533,104 @@ private fun fetchStmifyChannels(gson: Gson, streamDb: MutableMap<String, StreamD
         return emptyList()
     }
 
-    // Collect unique countries from post content and fetch their stream DBs
-    val countries = allPosts.mapNotNull { post ->
-        EMBED_RE.find(post.content?.rendered.orEmpty())?.groupValues?.get(2)
+    // Extract unique country names from class_list and map to 2-letter codes
+    val countryNames = allPosts.mapNotNull { post ->
+        post.classList?.firstOrNull { it.startsWith("live_tv_country-") }?.removePrefix("live_tv_country-")
     }.distinct()
-    if (countries.isNotEmpty()) {
-        println("  Stmify countries: $countries")
-        for (c in countries) {
-            val before = streamDb.size
-            fetchStreamDbForCountry(gson, streamDb, c)
-            val added = streamDb.size - before
-            if (added > 0) println("    $c: +$added stream entries")
+
+    val nameToCode = mutableMapOf<String, String>()
+    val nameToSamplePost = allPosts.groupBy { post ->
+        post.classList?.firstOrNull { it.startsWith("live_tv_country-") }?.removePrefix("live_tv_country-")
+    }.mapValues { (_, posts) -> posts.first() }
+
+    val unknown = mutableListOf<String>()
+    for (cn in countryNames) {
+        val code = COUNTRY_NAME_TO_CODE[cn]
+        if (code != null) nameToCode[cn] = code else unknown.add(cn)
+    }
+    for (cn in unknown) {
+        val rep = nameToSamplePost[cn] ?: continue
+        val html = try { curlFetch("$baseUrl/live-tv/${rep.slug}/", "text/html") } catch (e: Exception) { null }
+        if (html != null) {
+            val m = EMBED_RE.find(html)
+            if (m != null) nameToCode[cn] = m.groupValues[2]
         }
     }
 
-    // Convert posts to SourceItems using the merged stream DB
-    return allPosts.map { it.toSourceItem(baseUrl, streamDb) }
+    val codes = nameToCode.values.distinct()
+    if (codes.isNotEmpty()) println("  Country codes: $codes")
+    for (c in codes) {
+        val before = streamDb.size
+        fetchStreamDbForCountry(gson, streamDb, c)
+        val added = streamDb.size - before
+        if (added > 0) println("    $c: +$added stream entries")
+    }
+
+    // For channels still unmatched, fetch the HTML page to discover the embed slug
+    val embedOverrides = mutableMapOf<String, String>()
+    val unresolved = allPosts.filter { streamDb[streamDbKey(it.slug)]?.url == null }
+    if (unresolved.isNotEmpty()) {
+        println("  Resolving ${unresolved.size} unmatched channels via HTML pages ...")
+        for ((i, post) in unresolved.withIndex()) {
+            val html = try { curlFetch("$baseUrl/live-tv/${post.slug}/", "text/html") } catch (e: Exception) { null }
+            if (html != null) {
+                val m = EMBED_RE.find(html)
+                if (m != null) {
+                    embedOverrides[post.slug] = m.groupValues[1]
+                    val cc = m.groupValues[2]
+                    if (cc !in codes) {
+                        fetchStreamDbForCountry(gson, streamDb, cc)
+                    }
+                }
+            }
+            if ((i + 1) % 50 == 0) println("    resolved ${i + 1}/${unresolved.size}")
+        }
+    }
+
+    // Convert all posts to SourceItems
+    return allPosts.map { post ->
+        val streamKey = embedOverrides[post.slug]?.let { streamDbKey(it) } ?: streamDbKey(post.slug)
+        val entry = streamDb[streamKey]
+        val media = post.embedded?.featuredMedia?.firstOrNull()
+        val imgUrl = media?.sourceUrl
+            ?: media?.mediaDetails?.sizes?.entries
+                ?.firstOrNull { (k, _) -> k.contains("medium") || k.contains("large") }
+                ?.value?.sourceUrl
+        val genres = post.embedded?.terms?.flatten().orEmpty().map { it.name }
+        SourceItem(
+            id = post.slug,
+            name = post.title?.rendered?.trim().orEmpty(),
+            streamUrl = entry?.url,
+            logoUrl = imgUrl?.let { if (it.startsWith("http")) it else "$baseUrl/$it" },
+            category = genres.firstOrNull(),
+            country = null,
+            language = null,
+            quality = entry?.quality,
+            tvgId = post.slug,
+            drmKeyId = entry?.k1,
+            drmKey = entry?.k2,
+        )
+    }
 }
+
+/** Country taxonomy name to 2-letter ISO code used in stream DB URL. */
+private val COUNTRY_NAME_TO_CODE = mapOf(
+    "united-arab-emirates" to "ae", "saudi-arabia" to "sa", "egypt" to "eg",
+    "qatar" to "qa", "jordan" to "jo", "kuwait" to "kw", "bahrain" to "bh",
+    "oman" to "om", "lebanon" to "lb", "iraq" to "iq", "syria" to "sy",
+    "yemen" to "ye", "morocco" to "ma", "algeria" to "dz", "tunisia" to "tn",
+    "libya" to "ly", "palestine" to "ps", "sudan" to "sd", "mauritania" to "mr",
+    "united-kingdom" to "uk", "united-states" to "us", "canada" to "ca",
+    "australia" to "au", "india" to "in", "pakistan" to "pk", "france" to "fr",
+    "germany" to "de", "italy" to "it", "spain" to "es", "netherlands" to "nl",
+    "belgium" to "be", "switzerland" to "ch", "austria" to "at", "sweden" to "se",
+    "norway" to "no", "denmark" to "dk", "finland" to "fi", "ireland" to "ie",
+    "portugal" to "pt", "greece" to "gr", "turkey" to "tr", "mexico" to "mx",
+    "brazil" to "br", "argentina" to "ar", "malaysia" to "my", "singapore" to "sg",
+    "philippines" to "ph", "indonesia" to "id", "thailand" to "th", "vietnam" to "vn",
+    "new-zealand" to "nz", "south-africa" to "za", "nigeria" to "ng", "kenya" to "ke",
+    "ghana" to "gh",
+)
 
 /** Stream DB key derived from a WordPress slug or embed slug. */
 private fun streamDbKey(refId: String): String =
@@ -556,45 +638,6 @@ private fun streamDbKey(refId: String): String =
 
 /** Regex matching the Stmify embed iframe URL, capturing embed slug and country. */
 private val EMBED_RE = Regex("cdn\\.stmify\\.com/embed-free/v1/(.+?)-([a-z]{2})-[a-z0-9]")
-
-/** Look up stream DB, trying both the raw slug key and the embed-slug-derived key. */
-private fun resolveStreamEntry(slug: String, contentHtml: String?, streamDb: Map<String, StreamDbEntry>): StreamDbEntry? {
-    // 1) Try direct slug → stream key (e.g. "al-jazeera" → "AL_JAZEERA")
-    streamDb[streamDbKey(slug)]?.url?.let { return streamDb[streamDbKey(slug)] }
-    // 2) Parse embed URL from post content to derive the real stream key
-    if (contentHtml != null) {
-        val m = EMBED_RE.find(contentHtml)
-        if (m != null) {
-            val embedSlug = m.groupValues[1]
-            val entry = streamDb[streamDbKey(embedSlug)]
-            if (entry?.url != null) return entry
-        }
-    }
-    return null
-}
-
-private fun StmifyPostDto.toSourceItem(baseUrl: String, streamDb: Map<String, StreamDbEntry>): SourceItem {
-    val media = embedded?.featuredMedia?.firstOrNull()
-    val imgUrl = media?.sourceUrl
-        ?: media?.mediaDetails?.sizes?.entries
-            ?.firstOrNull { (k, _) -> k.contains("medium") || k.contains("large") }
-            ?.value?.sourceUrl
-    val genres = embedded?.terms?.flatten().orEmpty().map { it.name }
-    val streamEntry = resolveStreamEntry(slug, content?.rendered, streamDb)
-    return SourceItem(
-        id = slug,
-        name = title?.rendered?.trim().orEmpty(),
-        streamUrl = streamEntry?.url,
-        logoUrl = imgUrl?.let { if (it.startsWith("http")) it else "$baseUrl/$it" },
-        category = genres.firstOrNull(),
-        country = null,
-        language = null,
-        quality = streamEntry?.quality,
-        tvgId = slug,
-        drmKeyId = streamEntry?.k1,
-        drmKey = streamEntry?.k2,
-    )
-}
 
 private fun fetchPrimeVideoChannels(gson: Gson, streamDb: Map<String, StreamDbEntry>): List<SourceItem> {
     val url = "https://cdn.stmify.com/primevideo/template-parts/get-channels.php"

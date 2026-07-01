@@ -12,6 +12,7 @@ import com.streamverse.core.data.local.StreamVerseDatabase
 import com.streamverse.core.data.remote.dlhd.DlhdClient
 import com.streamverse.core.data.remote.fast.FastTvClient
 import com.streamverse.core.data.remote.free.FreeLiveClient
+import com.streamverse.core.data.remote.hosted.HostedIndexClient
 import com.streamverse.core.data.remote.independent.IndependentClient
 import com.streamverse.core.data.remote.broadcaster.BroadcasterClient
 import com.streamverse.core.data.remote.iptv.FreeTvClient
@@ -26,6 +27,7 @@ import com.streamverse.core.data.remote.premium.hunter.ResellerHunter
 import com.streamverse.core.data.remote.premium.hunter.SourceHunter
 import com.streamverse.core.data.remote.premium.hunter.SourceHunterManager
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
+import com.streamverse.core.data.remote.stmify.PrimeVideoClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
 import com.streamverse.core.data.remote.youtube.YouTubeTvClient
 import com.streamverse.core.data.repository.ChannelRepository
@@ -132,6 +134,12 @@ object CoreModule {
     fun provideStmifyClient(gson: Gson, dispatchers: StreamVerseDispatchers): StmifyClient = StmifyClient(gson, dispatchers)
 
     @Provides @Singleton
+    fun providePrimeVideoClient(gson: Gson, dispatchers: StreamVerseDispatchers, okHttpClient: okhttp3.OkHttpClient): PrimeVideoClient = PrimeVideoClient(gson, dispatchers, okHttpClient)
+
+    @Provides @Singleton
+    fun provideHostedIndexClient(gson: Gson, dispatchers: StreamVerseDispatchers, okHttpClient: okhttp3.OkHttpClient): HostedIndexClient = HostedIndexClient(gson, dispatchers, okHttpClient)
+
+    @Provides @Singleton
     fun provideIptvClient(dispatchers: StreamVerseDispatchers, okHttpClient: okhttp3.OkHttpClient): IptvClient = IptvClient(dispatchers, okHttpClient)
 
     @Provides @Singleton
@@ -167,7 +175,7 @@ object CoreModule {
     fun provideSourceResolutionEngine(sourceHealth: com.streamverse.core.data.SourceHealthPreferences, providerRegistry: ProviderRegistry): SourceResolutionEngine = SourceResolutionEngine(sourceHealth, providerRegistry)
 
     @Provides @Singleton
-    fun provideStreamResolver(dlhdClient: DlhdClient, stmifyClient: StmifyClient, dispatchers: StreamVerseDispatchers, youTubeLiveResolver: com.streamverse.core.util.YouTubeLiveResolver): StreamResolver = StreamResolver(dlhdClient, stmifyClient, dispatchers, youTubeLiveResolver)
+    fun provideStreamResolver(dlhdClient: DlhdClient, stmifyClient: StmifyClient, primeVideoClient: PrimeVideoClient, dispatchers: StreamVerseDispatchers, youTubeLiveResolver: com.streamverse.core.util.YouTubeLiveResolver): StreamResolver = StreamResolver(dlhdClient, stmifyClient, primeVideoClient, dispatchers, youTubeLiveResolver)
 
     @Provides @Singleton
     fun provideSourceRegistry(): SourceRegistry = SourceRegistry()
@@ -191,6 +199,8 @@ object CoreModule {
     fun provideChannelRepository(
         dlhdClient: DlhdClient,
         stmifyClient: StmifyClient,
+        primeVideoClient: PrimeVideoClient,
+        hostedIndexClient: HostedIndexClient,
         iptvClient: IptvClient,
         freeTvClient: FreeTvClient,
         radioBrowserClient: RadioBrowserClient,
@@ -212,7 +222,8 @@ object CoreModule {
         channelSearchDao: ChannelSearchDao,
         @ApplicationContext appContext: Context,
     ): ChannelRepository = ChannelRepository(
-        dlhdClient, stmifyClient, iptvClient, freeTvClient,
+        dlhdClient, stmifyClient, primeVideoClient, hostedIndexClient,
+        iptvClient, freeTvClient,
         radioBrowserClient, fastTvClient, premiumClient,
         independentClient, broadcasterClient, freeLiveClient,
         youtubeTvClient,
@@ -249,7 +260,7 @@ object CoreModule {
     fun provideDlhdProviderAdapter(dlhdClient: DlhdClient, dispatchers: StreamVerseDispatchers): DlhdProviderAdapter = DlhdProviderAdapter(dlhdClient, dispatchers)
 
     @Provides @Singleton
-    fun provideStmifyProviderAdapter(stmifyClient: StmifyClient, dispatchers: StreamVerseDispatchers): StmifyProviderAdapter = StmifyProviderAdapter(stmifyClient, dispatchers)
+    fun provideStmifyProviderAdapter(stmifyClient: StmifyClient, primeVideoClient: PrimeVideoClient, dispatchers: StreamVerseDispatchers): StmifyProviderAdapter = StmifyProviderAdapter(stmifyClient, primeVideoClient, dispatchers)
 
     @Provides @Singleton
     fun provideRadioProviderAdapter(radioBrowserClient: RadioBrowserClient, dispatchers: StreamVerseDispatchers): RadioProviderAdapter = RadioProviderAdapter(radioBrowserClient, dispatchers)

@@ -300,6 +300,7 @@ class PlayerViewModel @Inject constructor(
                     // Fast path: channel is already in memory from the home screen load.
                     // Only trigger a full load if the channel truly cannot be found, so that
                     // a deep‑link arriving before the catalogue is ready still resolves.
+                    var channel = repository.getChannelById(id)
                     if (channel == null) {
                         android.util.Log.d("PlayerViewModel", "loadChannel: first lookup id=$id → null")
                         repository.load()
@@ -319,7 +320,7 @@ class PlayerViewModel @Inject constructor(
                             }
                             if (channel == null) {
                                 android.util.Log.d("PlayerViewModel", "loadChannel: fallback to ANY channel")
-                                channel = repository.getChannels().find { ch ->
+                                channel = repository.getAllChannels().find { ch ->
                                     android.util.Log.d("PlayerViewModel", "  checking: id=${ch.id} sources=${ch.sources.keys}")
                                     ch.id.contains("nasa") || ch.id.contains("youtube")
                                 }
@@ -526,6 +527,8 @@ class PlayerViewModel @Inject constructor(
         val resolved = (cached ?: streamResolver.resolveAll(info)).toMutableList()
         // World TV sources can also fall back to their web player page.
         if (type == SourceType.WORLD_TV || type == SourceType.STMIFY_FREE || type == SourceType.STMIFY_PREMIUM) {
+            val slug = info.referenceId.lowercase().replace("_", "-")
+            resolved.add(StreamInfo("https://cdn.stmify.com/primevideo/live-tv/$slug", requiresBrowser = true))
             resolved.add(StreamInfo("https://stmify.com/live-tv/${info.referenceId}/", requiresBrowser = true))
         }
         val direct = resolved.filter { !it.requiresBrowser && !it.forceWebView }

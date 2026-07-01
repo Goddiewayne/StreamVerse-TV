@@ -15,7 +15,7 @@ class HostedIndexClient @Inject constructor(
     private val dispatchers: StreamVerseDispatchers,
     okHttpClient: OkHttpClient,
 ) {
-    private val baseUrl = "https://Goddiewayne.github.io/StreamVerse-TV"
+    private val baseUrl = "https://Goddiewayne.github.io/streamverse-data"
 
     private val client = okHttpClient.newBuilder()
         .readTimeout(30, TimeUnit.SECONDS)

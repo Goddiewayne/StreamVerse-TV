@@ -5,21 +5,9 @@ on:
     - cron: "0 6 * * *"   # daily at 06:00 UTC
   workflow_dispatch:       # manual trigger
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,11 +26,11 @@ jobs:
           python tools/hosted-index-builder/build_index.py \
             --output-dir ./dist
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Deploy to streamverse-data
+        uses: peaceiris/actions-gh-pages@v3
         with:
-          path: ./dist
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          deploy_key: ${{ secrets.STREAMVERSE_DEPLOY_KEY }}
+          external_repository: Goddiewayne/streamverse-data
+          publish_branch: main
+          publish_dir: ./dist
+          enable_jekyll: false

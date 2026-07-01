@@ -17,6 +17,7 @@ import com.streamverse.core.data.remote.iptv.IptvClient
 import com.streamverse.core.data.remote.premium.PremiumChannel
 import com.streamverse.core.data.remote.premium.PremiumClient
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
+import com.streamverse.core.data.remote.stmify.PrimeVideoClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
 import com.streamverse.core.data.remote.youtube.YouTubeTvChannel
 import com.streamverse.core.domain.model.SourceType
@@ -130,6 +131,7 @@ class DlhdProviderAdapter @Inject constructor(
 
 class StmifyProviderAdapter @Inject constructor(
     private val stmifyClient: StmifyClient,
+    private val primeVideoClient: PrimeVideoClient,
     private val dispatchers: StreamVerseDispatchers,
 ) : ProviderAdapter {
     override val providerId = "world_tv"
@@ -144,7 +146,8 @@ class StmifyProviderAdapter @Inject constructor(
     override suspend fun discoverChannels(): List<SourceChannelDTO> = withContext(dispatchers.io) {
         val a = stmifyClient.fetchChannels().getOrDefault(emptyList())
         val b = stmifyClient.fetchChannelsFromArchive().getOrDefault(emptyList())
-        (a + b).distinctBy { it.id }.map { it.toDTO() }
+        val c = primeVideoClient.fetchChannels().getOrDefault(emptyList())
+        (a + b + c).distinctBy { it.id }.map { it.toDTO() }
     }
 
     override suspend fun refreshMetadata(channelRefIds: List<String>): Map<String, SourceChannelDTO> = emptyMap()

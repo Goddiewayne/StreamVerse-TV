@@ -1,6 +1,7 @@
 package com.streamverse.core.util
 
 import com.streamverse.core.data.remote.dlhd.DlhdClient
+import com.streamverse.core.data.remote.stmify.PrimeVideoClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
 import com.streamverse.core.domain.model.SourceInfo
 import com.streamverse.core.domain.model.SourceType
@@ -12,6 +13,7 @@ import javax.inject.Singleton
 class StreamResolver @Inject constructor(
     private val dlhdClient: DlhdClient,
     private val stmifyClient: StmifyClient,
+    private val primeVideoClient: PrimeVideoClient,
     private val dispatchers: StreamVerseDispatchers,
     private val youTubeLiveResolver: YouTubeLiveResolver,
 ) {
@@ -82,9 +84,13 @@ class StreamResolver @Inject constructor(
                 StreamInfo(it, requiresBrowser = it.contains("dlhd.pk/"))
             }
             SourceType.WORLD_TV -> {
-                val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId)
-                if (direct.isSuccess) direct
-                else stmifyClient.resolveStreamUrl(sourceInfo.referenceId).map { StreamInfo(it, requiresBrowser = true) }
+                val prime = primeVideoClient.resolveDirectStream(sourceInfo.referenceId)
+                if (prime.isSuccess) prime
+                else {
+                    val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId)
+                    if (direct.isSuccess) direct
+                    else stmifyClient.resolveStreamUrl(sourceInfo.referenceId).map { StreamInfo(it, requiresBrowser = true) }
+                }
             }
             // Deprecated types — handled by canonicalOf above, unreachable
             SourceType.INDEPENDENT, SourceType.DLHD, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM ->
@@ -96,6 +102,8 @@ class StreamResolver @Inject constructor(
         val urls = mutableListOf<StreamInfo>()
         when (SourceType.canonicalOf(sourceInfo.type)) {
             SourceType.WORLD_TV -> {
+                val prime = primeVideoClient.resolveDirectStream(sourceInfo.referenceId).getOrNull()
+                if (prime != null) urls.add(prime)
                 val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId).getOrNull()
                 if (direct != null) urls.add(direct)
             }

@@ -104,9 +104,6 @@ class ChannelRepository @Inject constructor(
         private const val LAST_SEARCH_MAX = 500
         private val RE_SEARCH_WORD = Regex("""[\s\-/\.&']+""")
 
-        /** Guards against re-attempting WORLD_TV on every warm start within a session. */
-        private var worldTvAttempted = false
-
         // Patterns that identify X-rated/adult channels by display name.
         private val ADULT_NAME_PATTERNS = listOf(
             Regex("""\b18\+\s*\(""", RegexOption.IGNORE_CASE),         // "18+(Player-1)"
@@ -384,13 +381,8 @@ class ChannelRepository @Inject constructor(
             Log.d("ChannelLoad", "TOTAL ${pm.elapsed("finalize")}ms — ${mergedChannels.size} channels (pre-merged)")
             pm.logSummary()
 
-            // WORLD_TV (Stmify + PrimeVideo) sources are now pre-merged server-side
-            // and included in merged.json. Skip background fetch unless the merged
-            // output somehow lacks WORLD_TV (e.g. pipeline error, older run).
-            val hasWorldTv = mergedChannels.any { SourceType.WORLD_TV in it.sources }
-            if (!hasWorldTv) {
-                launch { fetchAndMergeWorldTv(mergedChannels) }
-            }
+            // WORLD_TV (Stmify + PrimeVideo) sources are always pre-merged server-side
+            // and included in merged.json — no background fetch needed.
 
             return@withContext
         }
@@ -668,56 +660,6 @@ class ChannelRepository @Inject constructor(
             SourceProvider.YOUTUBE_TV -> youtubeTvResults = emptyList()
             else -> {}
         }
-    }
-
-    /**
-     * Background-fetch WORLD_TV (Stmify + PrimeVideo) after the pre-merged path
-     * completes.  These sources aren't in the hosted channels.json so they're
-     * never included in merged.json — we load them here via their own APIs
-     * and merge sources into the existing channel list.
-     */
-    private suspend fun fetchAndMergeWorldTv(initialChannels: List<Channel>) {
-        if (worldTvAttempted) return
-        worldTvAttempted = true
-        val pm = PerformanceMonitor("ChannelLoad.WORLD_TV").also { it.start() }
-        _providerProgress.value = _providerProgress.value + (SourceProvider.WORLD_TV to ProviderLoadingPhase.LOADING)
-
-        incrementalMergeState.apply { initializeFromChannels(initialChannels) }
-        val t1 = System.currentTimeMillis()
-
-        val pair = runCatching {
-            coroutineScope {
-                val a = async { fetchWithin(45_000L) { stmifyClient.fetchChannels().getOrDefault(emptyList()) } }
-                val b = async { fetchWithin(45_000L) { stmifyClient.fetchChannelsFromArchive().getOrDefault(emptyList()) } }
-                val c = async { fetchWithin(10_000L) { primeVideoClient.fetchChannels().getOrDefault(emptyList()) } }
-                Pair((a.await() + b.await()).distinctBy { it.id }, c.await())
-            }
-        }.getOrDefault(Pair(emptyList(), emptyList()))
-
-        val stmifyList = pair.first
-        val primeList = pair.second
-        if (stmifyList.isEmpty() && primeList.isEmpty()) {
-            Log.w("ChannelLoad", "WORLD_TV fetch returned empty — skipping merge")
-            _providerProgress.value = _providerProgress.value + (SourceProvider.WORLD_TV to ProviderLoadingPhase.FAILED)
-            incrementalMergeState.release()
-            pm.logSummary()
-            return
-        }
-
-        stmifyResults = stmifyList
-        primeVideoResults = primeList
-        mergeSourceIntoState(SourceProvider.WORLD_TV)
-        clearAccumulator(SourceProvider.WORLD_TV)
-        emitMergedState()
-
-        _providerProgress.value = _providerProgress.value + (SourceProvider.WORLD_TV to ProviderLoadingPhase.COMPLETE)
-        Log.d("ChannelLoad", "WORLD_TV merged in ${System.currentTimeMillis() - t1}ms — " +
-            "${incrementalMergeState.addedCount} added, ${incrementalMergeState.updatedCount} updated")
-
-        cacheManager.save(_channels.value)
-        updateFtsIndex(_channels.value)
-        incrementalMergeState.release()
-        pm.logSummary()
     }
 
     /**

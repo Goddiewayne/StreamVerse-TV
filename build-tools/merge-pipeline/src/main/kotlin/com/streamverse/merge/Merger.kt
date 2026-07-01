@@ -1,6 +1,8 @@
 package com.streamverse.merge
 
 import com.google.gson.Gson
+import com.google.gson.JsonParser
+import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
 import com.google.gson.reflect.TypeToken
 import okhttp3.OkHttpClient
@@ -435,6 +437,55 @@ private data class PrimeVideoChannelEntry(
     val country: String?,
 )
 
+// ── Stream DB (pre-resolved stream URLs) ────────────────────────────────────
+
+private data class StreamDbEntry(
+    val url: String? = null,
+    val k1: String? = null,
+    val k2: String? = null,
+    val quality: String? = null,
+)
+
+/**
+ * Fetches the full Stmify streams database (one call covers all countries/channels).
+ * Returns a map of UPPER_KEBAB key → StreamDbEntry for streaming lookups.
+ */
+private fun fetchStreamDb(gson: Gson): Map<String, StreamDbEntry> = try {
+    // fetch_streams.php requires X-Requested-With (AJAX check) to bypass Cloudflare.
+    val curlCmd = if (System.getProperty("os.name").lowercase().contains("windows")) "curl.exe" else "curl"
+    val pb = ProcessBuilder(
+        curlCmd, "-s", "-L", "--max-time", "30",
+        "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "-H", "Accept: application/json,text/html",
+        "-H", "X-Requested-With: XMLHttpRequest",
+        "https://cdn.stmify.com/embed-free/fetch_streams.php"
+    )
+    pb.redirectErrorStream(true)
+    val proc = pb.start()
+    val body = proc.inputStream.bufferedReader().readText()
+    val exitCode = proc.waitFor()
+    if (exitCode != 0) throw RuntimeException("curl exit code $exitCode")
+    if (body.startsWith("{\"error\"")) throw RuntimeException(body)
+    // The response is a flat JSON object keyed by UPPER_KEBAB identifiers.
+    val root = JsonParser.parseString(body).asJsonObject
+    root.entrySet().associate { (key, value) ->
+        val obj = value.asJsonObject
+        key to StreamDbEntry(
+            url = obj.get("url")?.takeIf { it.isJsonPrimitive }?.asString,
+            k1 = obj.get("k1")?.takeIf { it.isJsonPrimitive }?.asString,
+            k2 = obj.get("k2")?.takeIf { it.isJsonPrimitive }?.asString,
+            quality = obj.get("quality")?.takeIf { it.isJsonPrimitive }?.asString,
+        )
+    }
+} catch (e: Exception) {
+    System.err.println("  WARN: Stream DB fetch failed: ${e.message}")
+    emptyMap()
+}
+
+/** Derive the streams-DB lookup key from a Stmify slug or PrimeVideo key. */
+private fun streamDbKey(refId: String): String =
+    refId.uppercase().replace("-", "_")
+
 // ── WORLD_TV Fetch Functions ───────────────────────────────────────────────
 
 // Use curl as a subprocess because java.net.HttpURLConnection and OkHttp both
@@ -456,7 +507,7 @@ private fun curlFetch(url: String, accept: String = "application/json"): String 
     return output
 }
 
-private fun fetchStmifyChannels(gson: Gson): List<SourceItem> {
+private fun fetchStmifyChannels(gson: Gson, streamDb: Map<String, StreamDbEntry>): List<SourceItem> {
     val baseUrl = "https://stmify.com"
     val apiBase = "$baseUrl/wp-json/wp/v2"
     val items = mutableListOf<SourceItem>()
@@ -472,7 +523,7 @@ private fun fetchStmifyChannels(gson: Gson): List<SourceItem> {
             break
         }
         if (dtos.isEmpty()) break
-        items.addAll(dtos.map { it.toSourceItem(baseUrl) })
+        items.addAll(dtos.map { it.toSourceItem(baseUrl, streamDb) })
         if (dtos.size < 100) break
     }
 
@@ -482,27 +533,30 @@ private fun fetchStmifyChannels(gson: Gson): List<SourceItem> {
     return items
 }
 
-private fun StmifyPostDto.toSourceItem(baseUrl: String): SourceItem {
+private fun StmifyPostDto.toSourceItem(baseUrl: String, streamDb: Map<String, StreamDbEntry>): SourceItem {
     val media = embedded?.featuredMedia?.firstOrNull()
     val imgUrl = media?.sourceUrl
         ?: media?.mediaDetails?.sizes?.entries
             ?.firstOrNull { (k, _) -> k.contains("medium") || k.contains("large") }
             ?.value?.sourceUrl
     val genres = embedded?.terms?.flatten().orEmpty().map { it.name }
+    val streamEntry = streamDb[streamDbKey(slug)]
     return SourceItem(
         id = slug,
         name = title?.rendered?.trim().orEmpty(),
-        streamUrl = null,
+        streamUrl = streamEntry?.url,
         logoUrl = imgUrl?.let { if (it.startsWith("http")) it else "$baseUrl/$it" },
         category = genres.firstOrNull(),
         country = null,
         language = null,
-        quality = null,
+        quality = streamEntry?.quality,
         tvgId = slug,
+        drmKeyId = streamEntry?.k1,
+        drmKey = streamEntry?.k2,
     )
 }
 
-private fun fetchPrimeVideoChannels(gson: Gson): List<SourceItem> {
+private fun fetchPrimeVideoChannels(gson: Gson, streamDb: Map<String, StreamDbEntry>): List<SourceItem> {
     val url = "https://cdn.stmify.com/primevideo/template-parts/get-channels.php"
     try {
         val body = curlFetch(url)
@@ -510,16 +564,19 @@ private fun fetchPrimeVideoChannels(gson: Gson): List<SourceItem> {
             body, object : TypeToken<Map<String, PrimeVideoChannelEntry>>() {}.type
         )
         return map.map { (key, entry) ->
+            val streamEntry = streamDb[streamDbKey(key)]
             SourceItem(
                 id = key,
                 name = key.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() },
-                streamUrl = null,
+                streamUrl = streamEntry?.url,
                 logoUrl = entry.logo,
                 category = entry.tagline?.split(",")?.firstOrNull()?.trim(),
                 country = entry.country,
                 language = null,
-                quality = null,
+                quality = streamEntry?.quality,
                 tvgId = key.lowercase().replace("_", "-"),
+                drmKeyId = streamEntry?.k1,
+                drmKey = streamEntry?.k2,
             )
         }
     } catch (e: Exception) {
@@ -577,9 +634,13 @@ fun main(args: Array<String>) {
     // ── fetch WORLD_TV (Stmify + PrimeVideo) ────────────────────────────────
     // These are not in channels.json, so we fetch them directly from the APIs.
     // The CI runner can access stmify.com (unlike Android emulators behind Cloudflare).
+    println("Fetching stream database (pre-resolved stream URLs) ...")
+    val streamDb = fetchStreamDb(gson)
+    println("  Stream DB entries: ${streamDb.size}")
+
     println("Fetching WORLD_TV sources (Stmify + PrimeVideo) ...")
-    val stmifyItems = fetchStmifyChannels(gson)
-    val primeItems = fetchPrimeVideoChannels(gson)
+    val stmifyItems = fetchStmifyChannels(gson, streamDb)
+    val primeItems = fetchPrimeVideoChannels(gson, streamDb)
     println("  Stmify: ${stmifyItems.size}, PrimeVideo: ${primeItems.size}")
     if (stmifyItems.isNotEmpty() || primeItems.isNotEmpty()) {
         val worldTvList = byType.getOrPut(SourceType.WORLD_TV) { mutableListOf() }

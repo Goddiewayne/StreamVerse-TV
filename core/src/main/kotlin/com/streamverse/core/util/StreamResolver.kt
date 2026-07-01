@@ -84,12 +84,24 @@ class StreamResolver @Inject constructor(
                 StreamInfo(it, requiresBrowser = it.contains("dlhd.pk/"))
             }
             SourceType.WORLD_TV -> {
-                val prime = primeVideoClient.resolveDirectStream(sourceInfo.referenceId)
-                if (prime.isSuccess) prime
-                else {
-                    val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId)
-                    if (direct.isSuccess) direct
-                    else stmifyClient.resolveStreamUrl(sourceInfo.referenceId).map { StreamInfo(it, requiresBrowser = true) }
+                // Pre-resolved stream URL from server-side merged.json
+                if (!sourceInfo.streamUrl.isNullOrBlank()) {
+                    Result.success(
+                        StreamInfo(
+                            url = sourceInfo.streamUrl,
+                            headers = sourceInfo.headers,
+                            drmKeyId = sourceInfo.drmKeyId,
+                            drmKey = sourceInfo.drmKey,
+                        )
+                    )
+                } else {
+                    val prime = primeVideoClient.resolveDirectStream(sourceInfo.referenceId)
+                    if (prime.isSuccess) prime
+                    else {
+                        val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId)
+                        if (direct.isSuccess) direct
+                        else stmifyClient.resolveStreamUrl(sourceInfo.referenceId).map { StreamInfo(it, requiresBrowser = true) }
+                    }
                 }
             }
         }
@@ -99,6 +111,17 @@ class StreamResolver @Inject constructor(
         val urls = mutableListOf<StreamInfo>()
         when (SourceType.canonicalOf(sourceInfo.type)) {
             SourceType.WORLD_TV -> {
+                // Pre-resolved stream URL from server-side merged.json
+                if (!sourceInfo.streamUrl.isNullOrBlank()) {
+                    urls.add(
+                        StreamInfo(
+                            url = sourceInfo.streamUrl,
+                            headers = sourceInfo.headers,
+                            drmKeyId = sourceInfo.drmKeyId,
+                            drmKey = sourceInfo.drmKey,
+                        )
+                    )
+                }
                 val prime = primeVideoClient.resolveDirectStream(sourceInfo.referenceId).getOrNull()
                 if (prime != null) urls.add(prime)
                 val direct = stmifyClient.resolveDirectStream(sourceInfo.referenceId).getOrNull()

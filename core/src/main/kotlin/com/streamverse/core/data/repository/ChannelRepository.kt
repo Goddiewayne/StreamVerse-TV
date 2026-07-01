@@ -423,7 +423,8 @@ class ChannelRepository @Inject constructor(
 
         suspend fun processDef(def: SourceDef) {
             // If hosted index already loaded, skip all individual fetches (Tier 1+)
-            if (def.tier >= 1 && hostedIndexLoaded) {
+            // except PREMIUM (too large — excluded from combined index, fetched on-device).
+            if (def.tier >= 1 && def.provider != SourceProvider.PREMIUM && hostedIndexLoaded) {
                 Log.d("ChannelLoad", "${def.provider} skipped (hosted index loaded)")
                 return
             }

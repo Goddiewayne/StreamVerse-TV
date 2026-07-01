@@ -1027,6 +1027,12 @@ async def main():
                 if channels:
                     write_index(channels, name, output_dir)
 
+                # Skip premium from combined channels.json (too large — 121K channels / 44 MB)
+                # App fetches premium on-device via Tier 2 if needed.
+                if name == "premium":
+                    log.info("Skipping premium from combined index (too large — %d channels)", len(channels))
+                    continue
+
                 for ch in channels:
                     cid = ch.get("id", "")
                     if cid and cid not in seen_ids:

@@ -29,7 +29,7 @@ jobs:
       - name: Deploy to streamverse-data
         uses: peaceiris/actions-gh-pages@v3
         with:
-          deploy_key: ${{ secrets.STREAMVERSE_DEPLOY_KEY }}
+          personal_token: ${{ secrets.STREAMVERSE_DATA_TOKEN }}
           external_repository: Goddiewayne/streamverse-data
           publish_branch: main
           publish_dir: ./dist

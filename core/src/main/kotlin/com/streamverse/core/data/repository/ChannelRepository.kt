@@ -384,10 +384,13 @@ class ChannelRepository @Inject constructor(
             Log.d("ChannelLoad", "TOTAL ${pm.elapsed("finalize")}ms — ${mergedChannels.size} channels (pre-merged)")
             pm.logSummary()
 
-            // WORLD_TV (Stmify + PrimeVideo) is NOT in the hosted channels.json,
-            // so it's never included in the pre-merged output.  Fetch it in the
-            // background and merge sources into the already-emitted channel list.
-            launch { fetchAndMergeWorldTv(mergedChannels) }
+            // WORLD_TV (Stmify + PrimeVideo) sources are now pre-merged server-side
+            // and included in merged.json. Skip background fetch unless the merged
+            // output somehow lacks WORLD_TV (e.g. pipeline error, older run).
+            val hasWorldTv = mergedChannels.any { SourceType.WORLD_TV in it.sources }
+            if (!hasWorldTv) {
+                launch { fetchAndMergeWorldTv(mergedChannels) }
+            }
 
             return@withContext
         }

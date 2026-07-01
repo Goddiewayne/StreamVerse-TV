@@ -1,6 +1,8 @@
 package com.streamverse.merge
 
 import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
+import com.google.gson.reflect.TypeToken
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -400,6 +402,132 @@ private data class SourceItem(
     val drmKey: String? = null,
 )
 
+// ── Stmify (WordPress REST API) DTOs ────────────────────────────────────────
+
+private data class StmifyTitle(val rendered: String)
+private data class StmifyExcerpt(val rendered: String)
+private data class StmifyMediaSize(@SerializedName("source_url") val sourceUrl: String)
+private data class StmifyMediaDetails(val sizes: Map<String, StmifyMediaSize>?)
+private data class StmifyFeaturedMedia(
+    @SerializedName("source_url") val sourceUrl: String?,
+    @SerializedName("media_details") val mediaDetails: StmifyMediaDetails?,
+)
+private data class StmifyTerm(val name: String)
+private data class StmifyEmbedded(
+    @SerializedName("wp:featuredmedia") val featuredMedia: List<StmifyFeaturedMedia>?,
+    @SerializedName("wp:term") val terms: List<List<StmifyTerm>>?,
+)
+private data class StmifyPostDto(
+    val id: Int,
+    val slug: String,
+    val title: StmifyTitle?,
+    val excerpt: StmifyExcerpt?,
+    @SerializedName("_embedded") val embedded: StmifyEmbedded?,
+)
+
+// ── PrimeVideo DTOs ────────────────────────────────────────────────────────
+
+private data class PrimeVideoChannelEntry(
+    val logo: String?,
+    val tagline: String?,
+    val hd: Boolean = false,
+    val description: String?,
+    val country: String?,
+)
+
+// ── WORLD_TV Fetch Functions ───────────────────────────────────────────────
+
+// Use curl as a subprocess because java.net.HttpURLConnection and OkHttp both
+// trigger Cloudflare WAF 403 on some networks, while curl does not.
+// curl is available on all CI platforms (Windows: curl.exe, Linux/macOS: curl).
+private fun curlFetch(url: String, accept: String = "application/json"): String {
+    val curlCmd = if (System.getProperty("os.name").lowercase().contains("windows")) "curl.exe" else "curl"
+    val pb = ProcessBuilder(
+        curlCmd, "-s", "-L", "--max-time", "30",
+        "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "-H", "Accept: $accept",
+        url
+    )
+    pb.redirectErrorStream(true)
+    val proc = pb.start()
+    val output = proc.inputStream.bufferedReader().readText()
+    val exitCode = proc.waitFor()
+    if (exitCode != 0) throw RuntimeException("curl exit code $exitCode")
+    return output
+}
+
+private fun fetchStmifyChannels(gson: Gson): List<SourceItem> {
+    val baseUrl = "https://stmify.com"
+    val apiBase = "$baseUrl/wp-json/wp/v2"
+    val items = mutableListOf<SourceItem>()
+
+    // curlFetch works on networks where OkHttp/JDK get blocked by Cloudflare
+    for (page in 1..50) {
+        val url = "$apiBase/live-tv?per_page=100&page=$page&_embed=wp:featuredmedia,wp:term"
+        val dtos = try {
+            val body = curlFetch(url)
+            gson.fromJson<List<StmifyPostDto>>(body, object : TypeToken<List<StmifyPostDto>>() {}.type)
+        } catch (e: Exception) {
+            if (items.isEmpty()) System.err.println("  WARN: Stmify page $page error: ${e.message}")
+            break
+        }
+        if (dtos.isEmpty()) break
+        items.addAll(dtos.map { it.toSourceItem(baseUrl) })
+        if (dtos.size < 100) break
+    }
+
+    if (items.isEmpty()) {
+        System.err.println("  WARN: Stmify API returned no data, skipping WORLD_TV")
+    }
+    return items
+}
+
+private fun StmifyPostDto.toSourceItem(baseUrl: String): SourceItem {
+    val media = embedded?.featuredMedia?.firstOrNull()
+    val imgUrl = media?.sourceUrl
+        ?: media?.mediaDetails?.sizes?.entries
+            ?.firstOrNull { (k, _) -> k.contains("medium") || k.contains("large") }
+            ?.value?.sourceUrl
+    val genres = embedded?.terms?.flatten().orEmpty().map { it.name }
+    return SourceItem(
+        id = slug,
+        name = title?.rendered?.trim().orEmpty(),
+        streamUrl = null,
+        logoUrl = imgUrl?.let { if (it.startsWith("http")) it else "$baseUrl/$it" },
+        category = genres.firstOrNull(),
+        country = null,
+        language = null,
+        quality = null,
+        tvgId = slug,
+    )
+}
+
+private fun fetchPrimeVideoChannels(gson: Gson): List<SourceItem> {
+    val url = "https://cdn.stmify.com/primevideo/template-parts/get-channels.php"
+    try {
+        val body = curlFetch(url)
+        val map: Map<String, PrimeVideoChannelEntry> = gson.fromJson(
+            body, object : TypeToken<Map<String, PrimeVideoChannelEntry>>() {}.type
+        )
+        return map.map { (key, entry) ->
+            SourceItem(
+                id = key,
+                name = key.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() },
+                streamUrl = null,
+                logoUrl = entry.logo,
+                category = entry.tagline?.split(",")?.firstOrNull()?.trim(),
+                country = entry.country,
+                language = null,
+                quality = null,
+                tvgId = key.lowercase().replace("_", "-"),
+            )
+        }
+    } catch (e: Exception) {
+        System.err.println("  WARN: PrimeVideo API error: ${e.message}, skipping")
+        return emptyList()
+    }
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 fun main(args: Array<String>) {
@@ -445,6 +573,19 @@ fun main(args: Array<String>) {
         ))
     }
     println("Grouped into ${byType.size} source types ($skipped unknown source tags)")
+
+    // ── fetch WORLD_TV (Stmify + PrimeVideo) ────────────────────────────────
+    // These are not in channels.json, so we fetch them directly from the APIs.
+    // The CI runner can access stmify.com (unlike Android emulators behind Cloudflare).
+    println("Fetching WORLD_TV sources (Stmify + PrimeVideo) ...")
+    val stmifyItems = fetchStmifyChannels(gson)
+    val primeItems = fetchPrimeVideoChannels(gson)
+    println("  Stmify: ${stmifyItems.size}, PrimeVideo: ${primeItems.size}")
+    if (stmifyItems.isNotEmpty() || primeItems.isNotEmpty()) {
+        val worldTvList = byType.getOrPut(SourceType.WORLD_TV) { mutableListOf() }
+        worldTvList.addAll(stmifyItems)
+        worldTvList.addAll(primeItems)
+    }
 
     // ── merge in priority order ─────────────────────────────────────────────
     val engine = MergeEngine()

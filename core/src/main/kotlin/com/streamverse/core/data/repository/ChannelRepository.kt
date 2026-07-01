@@ -26,7 +26,9 @@ import com.streamverse.core.data.remote.broadcaster.BroadcasterClient
 import com.streamverse.core.data.remote.youtube.YouTubeTvClient
 import com.streamverse.core.data.remote.youtube.YouTubeTvChannel
 
+import com.streamverse.core.data.remote.hosted.HostedIndexClient
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
+import com.streamverse.core.data.remote.stmify.PrimeVideoClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
 import com.streamverse.core.data.source.ChannelCanonicalizer
 import com.streamverse.core.data.source.EntityResolutionEngine
@@ -73,6 +75,8 @@ enum class LoadingPhase { IDLE, CACHE, LOADING, DONE }
 class ChannelRepository @Inject constructor(
     private val dlhdClient: DlhdClient,
     private val stmifyClient: StmifyClient,
+    private val primeVideoClient: PrimeVideoClient,
+    private val hostedIndexClient: HostedIndexClient,
     private val iptvClient: IptvClient,
     private val freeTvClient: FreeTvClient,
     private val radioBrowserClient: RadioBrowserClient,
@@ -96,6 +100,7 @@ class ChannelRepository @Inject constructor(
 ) {
     private val entityResolutionEngine = EntityResolutionEngine()
     private val incrementalMergeState = IncrementalMergeState(entityResolutionEngine, metadataAggregator)
+    @Volatile private var hostedIndexLoaded = false
     private val loadInProgress = AtomicBoolean(false)
 
     companion object {
@@ -105,12 +110,6 @@ class ChannelRepository @Inject constructor(
         private const val LAST_SEARCH_MAX = 500
 
         // Patterns that identify X-rated/adult channels by display name.
-        /** Instant-loading providers (no network — hardcoded or asset-based). */
-        val TIER_0 = setOf(SourceProvider.VERIFIED, SourceProvider.BROADCASTER)
-        /** Fast network providers (M3U-based, typically <5s). */
-        val TIER_1 = setOf(SourceProvider.IPTV, SourceProvider.FREE_TV, SourceProvider.RADIO, SourceProvider.FAST_TV)
-        /** Slow/unreliable network providers (scraping, large payloads, up to 55s). */
-        val TIER_2 = setOf(SourceProvider.DLHD, SourceProvider.STMIFY, SourceProvider.PREMIUM, SourceProvider.FREE_CHANNEL)
 
         private val ADULT_NAME_PATTERNS = listOf(
             Regex("""\b18\+\s*\(""", RegexOption.IGNORE_CASE),         // "18+(Player-1)"
@@ -262,13 +261,12 @@ class ChannelRepository @Inject constructor(
     private val maxConcurrentLoads = 10
     private val loadSemaphore = Semaphore(maxConcurrentLoads)
 
-    // Per‑source fetch timeout so a single hanging provider never blocks the whole load.
-    private val sourceFetchTimeoutMs = 55_000L
 
     // Accumulated raw source results.  Each source loads into its own list, then
     // mergeSourceIntoState() feeds them into IncrementalMergeState one at a time.
     private var dlhdResults: List<com.streamverse.core.data.model.DlhdChannel> = emptyList()
     private var stmifyResults: List<com.streamverse.core.data.model.StmifyChannel> = emptyList()
+    private var primeVideoResults: List<com.streamverse.core.data.model.StmifyChannel> = emptyList()
     private var iptvResults: List<IptvChannel> = emptyList()
     private var freeTvResults: List<IptvChannel> = emptyList()
     private var radioResults: List<com.streamverse.core.data.model.RadioStation> = emptyList()
@@ -350,54 +348,64 @@ class ChannelRepository @Inject constructor(
             incrementalMergeState.channels
         } else emptyList()
 
-        // ── Step 3: discover & launch ALL enabled sources in parallel ───
+        // ── Step 3: discover & launch ALL enabled sources in priority tiers ──
         data class SourceDef(
             val provider: SourceProvider,
             val timeoutMs: Long,
+            val tier: Int = 2,
+            val skipMerge: Boolean = false,
             val load: suspend () -> Boolean,
         )
 
         fun buildDefs(): List<SourceDef> {
             val enabled = sourcePreferences.enabled()
             val defs = mutableListOf<SourceDef>()
-            if (enabled[SourceProvider.DLHD] != false) defs.add(SourceDef(SourceProvider.DLHD, 45_000L) {
-                dlhdResults = fetchWithin(sourceFetchTimeoutMs) { dlhdClient.fetchChannelsFromScrape().getOrDefault(emptyList()) }; dlhdResults.isNotEmpty()
+            // Tier 0 — instant local sources (run first, no semaphore)
+            if (enabled[SourceProvider.INDEPENDENT] != false) defs.add(SourceDef(SourceProvider.INDEPENDENT, 5_000L, tier = 0) {
+                independentResults = independentClient.fetchChannels(); independentResults.isNotEmpty()
             })
-            if (enabled[SourceProvider.STMIFY] != false) defs.add(SourceDef(SourceProvider.STMIFY, 45_000L) {
-                val a = fetchWithin(sourceFetchTimeoutMs) { stmifyClient.fetchChannels().getOrDefault(emptyList()) }
-                val b = fetchWithin(sourceFetchTimeoutMs) { stmifyClient.fetchChannelsFromArchive().getOrDefault(emptyList()) }
-                stmifyResults = (a + b).distinctBy { it.id }; stmifyResults.isNotEmpty()
-            })
-            if (enabled[SourceProvider.IPTV] != false) defs.add(SourceDef(SourceProvider.IPTV, 55_000L) {
-                iptvResults = fetchWithin(sourceFetchTimeoutMs) { iptvClient.fetchChannels().getOrDefault(emptyList()) }
-                    .filterNot { it.name.trim() in deadChannelNames }; iptvResults.isNotEmpty()
-            })
-            if (enabled[SourceProvider.FREE_TV] != false) defs.add(SourceDef(SourceProvider.FREE_TV, 55_000L) {
-                freeTvResults = fetchWithin(sourceFetchTimeoutMs) { freeTvClient.fetchChannels().getOrDefault(emptyList()) }
-                    .filterNot { it.name.trim() in deadChannelNames }; freeTvResults.isNotEmpty()
-            })
-            if (enabled[SourceProvider.RADIO] != false) defs.add(SourceDef(SourceProvider.RADIO, 55_000L) {
-                radioResults = fetchWithin(sourceFetchTimeoutMs) { radioBrowserClient.fetchStations().getOrDefault(emptyList()) }; radioResults.isNotEmpty()
-            })
-            if (enabled[SourceProvider.FAST_TV] != false) defs.add(SourceDef(SourceProvider.FAST_TV, 55_000L) {
-                fastTvResults = fetchWithin(sourceFetchTimeoutMs) { fastTvClient.fetchChannels().getOrDefault(emptyList()) }
-                    .filterNot { it.name.trim() in deadChannelNames }; fastTvResults.isNotEmpty()
-            })
-            if (enabled[SourceProvider.PREMIUM] != false) defs.add(SourceDef(SourceProvider.PREMIUM, 55_000L) {
-                premiumResults = fetchWithin(sourceFetchTimeoutMs) { premiumClient.fetchChannels().getOrDefault(emptyList()) }.take(10000); premiumResults.isNotEmpty()
-            })
-            if (enabled[SourceProvider.INDEPENDENT] != false) defs.add(SourceDef(SourceProvider.INDEPENDENT, 55_000L) {
-                independentResults = fetchWithin(sourceFetchTimeoutMs) { independentClient.fetchChannels() }; independentResults.isNotEmpty()
-            })
-            if (enabled[SourceProvider.BROADCASTER] != false) defs.add(SourceDef(SourceProvider.BROADCASTER, 55_000L) {
+            if (enabled[SourceProvider.BROADCASTER] != false) defs.add(SourceDef(SourceProvider.BROADCASTER, 5_000L, tier = 0) {
                 broadcasterResults = broadcasterClient.fetchChannels(); broadcasterResults.isNotEmpty()
             })
-            if (enabled[SourceProvider.FREE_CHANNEL] != false) defs.add(SourceDef(SourceProvider.FREE_CHANNEL, 55_000L) {
-                freeLiveResults = fetchWithin(sourceFetchTimeoutMs) { freeLiveClient.fetchChannels().getOrDefault(emptyList()) }
+
+            if (enabled[SourceProvider.STMIFY] != false) defs.add(SourceDef(SourceProvider.STMIFY, 45_000L, tier = 1) {
+                coroutineScope {
+                    val a = async { fetchWithin(45_000L) { stmifyClient.fetchChannels().getOrDefault(emptyList()) } }
+                    val b = async { fetchWithin(45_000L) { stmifyClient.fetchChannelsFromArchive().getOrDefault(emptyList()) } }
+                    val c = async { fetchWithin(10_000L) { primeVideoClient.fetchChannels().getOrDefault(emptyList()) } }
+                    stmifyResults = (a.await() + b.await()).distinctBy { it.id }
+                    primeVideoResults = c.await()
+                }; stmifyResults.isNotEmpty() || primeVideoResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.FREE_CHANNEL] != false) defs.add(SourceDef(SourceProvider.FREE_CHANNEL, 20_000L, tier = 1) {
+                freeLiveResults = fetchWithin(20_000L) { freeLiveClient.fetchChannels().getOrDefault(emptyList()) }
                     .filterNot { it.name.trim() in deadChannelNames }; freeLiveResults.isNotEmpty()
             })
-            if (enabled[SourceProvider.YOUTUBE_TV] != false) defs.add(SourceDef(SourceProvider.YOUTUBE_TV, 30_000L) {
-                youtubeTvResults = fetchWithin(30_000L) { youtubeTvClient.discoverChannels() }; youtubeTvResults.isNotEmpty()
+            if (enabled[SourceProvider.YOUTUBE_TV] != false) defs.add(SourceDef(SourceProvider.YOUTUBE_TV, 15_000L, tier = 1) {
+                youtubeTvResults = fetchWithin(15_000L) { youtubeTvClient.discoverChannels() }; youtubeTvResults.isNotEmpty()
+            })
+            // Tier 2 — bulk/slow network sources (parallel, semaphore-bounded)
+            // Skipped at execution time if hosted index successfully loaded (see processDef)
+            if (enabled[SourceProvider.DLHD] != false) defs.add(SourceDef(SourceProvider.DLHD, 45_000L, tier = 2) {
+                dlhdResults = fetchWithin(45_000L) { dlhdClient.fetchChannelsFromScrape().getOrDefault(emptyList()) }; dlhdResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.IPTV] != false) defs.add(SourceDef(SourceProvider.IPTV, 25_000L, tier = 2) {
+                iptvResults = fetchWithin(25_000L) { iptvClient.fetchChannels().getOrDefault(emptyList()) }
+                    .filterNot { it.name.trim() in deadChannelNames }; iptvResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.FREE_TV] != false) defs.add(SourceDef(SourceProvider.FREE_TV, 15_000L, tier = 2) {
+                freeTvResults = fetchWithin(15_000L) { freeTvClient.fetchChannels().getOrDefault(emptyList()) }
+                    .filterNot { it.name.trim() in deadChannelNames }; freeTvResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.RADIO] != false) defs.add(SourceDef(SourceProvider.RADIO, 15_000L, tier = 2) {
+                radioResults = fetchWithin(15_000L) { radioBrowserClient.fetchStations().getOrDefault(emptyList()) }; radioResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.FAST_TV] != false) defs.add(SourceDef(SourceProvider.FAST_TV, 15_000L, tier = 2) {
+                fastTvResults = fetchWithin(15_000L) { fastTvClient.fetchChannels().getOrDefault(emptyList()) }
+                    .filterNot { it.name.trim() in deadChannelNames }; fastTvResults.isNotEmpty()
+            })
+            if (enabled[SourceProvider.PREMIUM] != false) defs.add(SourceDef(SourceProvider.PREMIUM, 35_000L, tier = 2) {
+                premiumResults = fetchWithin(35_000L) { premiumClient.fetchChannels().getOrDefault(emptyList()) }.take(10000); premiumResults.isNotEmpty()
             })
             return defs
         }
@@ -411,32 +419,102 @@ class ChannelRepository @Inject constructor(
         }
 
         val totalSources = defs.size
-        var completedSources = 0
+        var totalEmits = 0
 
         suspend fun processDef(def: SourceDef) {
-            loadSemaphore.acquire()
+            // If hosted index already loaded, skip all individual fetches (Tier 1+)
+            if (def.tier >= 1 && hostedIndexLoaded) {
+                Log.d("ChannelLoad", "${def.provider} skipped (hosted index loaded)")
+                return
+            }
+            val useSemaphore = def.tier >= 2
+            if (useSemaphore) loadSemaphore.acquire()
             try {
                 val t1 = System.currentTimeMillis()
                 val hadData = def.load()
                 Log.d("ChannelLoad", "${def.provider} ${if (hadData) "loaded" else "empty"} in ${System.currentTimeMillis() - t1}ms")
-                if (hadData) {
+                if (hadData && !def.skipMerge) {
                     mergeSourceIntoState(def.provider)
                     clearAccumulator(def.provider)
-                    val now = System.currentTimeMillis()
-                    if (now - lastEmitMs > 400L) { lastEmitMs = now; emitMergedState() }
+                }
+                if (hadData) {
+                    totalEmits++
+                    // First 3 sources emit immediately (no throttle) for instant perceived load
+                    if (totalEmits <= 3) {
+                        emitMergedState()
+                    } else {
+                        val now = System.currentTimeMillis()
+                        if (now - lastEmitMs > 400L) { lastEmitMs = now; emitMergedState() }
+                    }
                 }
             } catch (e: Exception) {
                 Log.w("ChannelLoad", "${def.provider} failed: ${e.message}")
             } finally {
-                loadSemaphore.release()
-                synchronized(this@ChannelRepository) { completedSources++ }
+                if (useSemaphore) loadSemaphore.release()
             }
         }
 
-        // ALL sources launch in parallel — no tiered sequencing.
+        // Tier 0: instant local sources — sequential, no semaphore, emit immediately
+        pm.phaseStarted("tier_0")
+        for (def in defs.filter { it.tier == 0 }) { processDef(def) }
+        pm.phaseEnded("tier_0")
+
+        // ── Hosted index pre‑fetch ──────────────────────────────────────
+        // Fetch the pre‑merged bulk data before launching individual sources.
+        // Uses the combined channels.json (all sources) in a single fetch.
+        // If it succeeds, ALL individual Tier 1 + Tier 2 fetches are skipped.
+        pm.phaseStarted("hosted_index")
+        hostedIndexLoaded = run {
+            val all = hostedIndexClient.fetchAll()
+            if (all.isEmpty()) return@run false
+            val bySource = all.groupBy { it.source }
+            for ((source, channels) in bySource) {
+                val sourceType = when {
+                    source == "IPTV" -> SourceType.IPTV
+                    source == "FREE_TV" -> SourceType.FREE_TV
+                    source == "FAST_TV" -> SourceType.FAST_TV
+                    source.startsWith("PREMIUM") -> SourceType.PREMIUM
+                    source.startsWith("FREE_LIVE") -> SourceType.FREE_CHANNEL
+                    source == "RADIO" -> SourceType.RADIO
+                    source == "STMIFY" -> SourceType.WORLD_TV
+                    source == "DLHD" -> SourceType.SPORTS_EVENTS
+                    source == "YOUTUBE_TV" -> SourceType.YOUTUBE_TV
+                    source == "VERIFIED" -> SourceType.VERIFIED
+                    source == "BROADCASTER" -> SourceType.BROADCASTER
+                    else -> null
+                }
+                if (sourceType != null) {
+                    incrementalMergeState.mergeSources(
+                        channels.map { ch ->
+                            SourceItem(
+                                id = ch.id,
+                                name = ch.name,
+                                streamUrl = ch.streamUrl,
+                                logoUrl = ch.logoUrl,
+                                category = ch.category,
+                                country = ch.country,
+                                language = ch.language,
+                                quality = ch.quality,
+                                headers = ch.headers ?: emptyMap(),
+                                drmKeyId = ch.drmKeyId,
+                                drmKey = ch.drmKey,
+                            )
+                        },
+                        sourceType,
+                    )
+                }
+            }
+            emitMergedState()
+            Log.d("ChannelLoad", "Hosted index loaded ${all.size} channels from ${bySource.size} sources — skipping all individual fetches")
+            true
+        }
+        pm.phaseEnded("hosted_index")
+
+        // Tier 1 + Tier 2: parallel launch — fast sources (tier 1) skip semaphore entirely
+        // All individual fetches are skipped when hosted index succeeded.
         pm.phaseStarted("source_fetch")
         coroutineScope {
-            for (def in defs) {
+            for (def in defs.filter { it.tier >= 1 }) {
                 async { processDef(def) }
             }
         }
@@ -474,10 +552,13 @@ class ChannelRepository @Inject constructor(
                 dlhdResults.map { SourceItem(it.id, it.name, null, it.logoUrl, it.category, null, null, null) },
                 SourceType.SPORTS_EVENTS,
             )
-            SourceProvider.WORLD_TV -> incrementalMergeState.mergeSources(
-                stmifyResults.map { SourceItem(it.id, it.name, null, it.logoUrl, null, null, null, it.quality?.name) },
-                SourceType.WORLD_TV,
-            )
+            SourceProvider.WORLD_TV -> {
+                val allResults = stmifyResults + primeVideoResults
+                incrementalMergeState.mergeSources(
+                    allResults.map { SourceItem(it.id, it.name, null, it.logoUrl, it.genres.firstOrNull(), null, null, it.quality?.name) },
+                    SourceType.WORLD_TV,
+                )
+            }
             SourceProvider.IPTV -> incrementalMergeState.mergeSources(
                 iptvResults.map { SourceItem(it.id, it.name, it.streamUrl, it.logoUrl, it.category, it.country, it.language, it.quality, headers = it.headers, drmKeyId = it.drmKeyId, drmKey = it.drmKey) },
                 SourceType.IPTV,
@@ -566,6 +647,7 @@ class ChannelRepository @Inject constructor(
     private fun resetSourceResults() {
         dlhdResults = emptyList()
         stmifyResults = emptyList()
+        primeVideoResults = emptyList()
         iptvResults = emptyList()
         freeTvResults = emptyList()
         radioResults = emptyList()
@@ -581,7 +663,7 @@ class ChannelRepository @Inject constructor(
     private fun clearAccumulator(provider: SourceProvider) {
         when (SourceProvider.canonicalOf(provider)) {
             SourceProvider.SPORTS_EVENTS -> dlhdResults = emptyList()
-            SourceProvider.WORLD_TV -> stmifyResults = emptyList()
+            SourceProvider.WORLD_TV -> { stmifyResults = emptyList(); primeVideoResults = emptyList() }
             SourceProvider.IPTV -> iptvResults = emptyList()
             SourceProvider.FREE_TV -> freeTvResults = emptyList()
             SourceProvider.RADIO -> radioResults = emptyList()
@@ -725,7 +807,7 @@ class ChannelRepository @Inject constructor(
 
     suspend fun getChannelsWithSource(sourceType: SourceType): List<Channel> = withContext(dispatchers.io) {
         val result = mutableListOf<Channel>()
-        for ((id, ch) in byId.entries) {
+        for ((id, ch) in _idIndex) {
             if (sourceType in ch.sources) {
                 result.add(ch)
             }

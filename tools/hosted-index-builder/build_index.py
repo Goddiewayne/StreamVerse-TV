@@ -215,7 +215,7 @@ async def resolve_dlhd_from_mirror_page(session: aiohttp.ClientSession) -> str |
     for m in MIRROR_PAGE_RE.finditer(text):
         domain = m.group(1)
         # Only consider dlhd.* domains from the page
-        if domain.startswith("dlhd.") or domain.startswith("daddylive."):
+        if domain.startswith("dlhd."):
             if domain not in candidates:
                 candidates.append(domain)
 

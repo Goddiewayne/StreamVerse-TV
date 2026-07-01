@@ -99,7 +99,7 @@ class DlhdClient @Inject constructor(
         return baseUrl // stick with current if all fail
     }
 
-    private val domainInitialized: Unit by lazy { discoverDomain() }
+    private val domainInitialized: Unit by lazy { discoverDomain(); Unit }
 
     private fun ensureDomain() { domainInitialized }
 

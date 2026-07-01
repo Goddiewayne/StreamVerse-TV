@@ -5,9 +5,10 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'build-tools/merge-pipeline/**'
+      - '.github/workflows/merge-channels.yml'
 
 env:
   DATA_BASE_URL: https://Goddiewayne.github.io/streamverse-data
@@ -25,6 +26,7 @@ jobs:
           repository: Goddiewayne/streamverse-data
           token: ${{ secrets.GH_PAT }}
           path: data
+          ref: gh-pages
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

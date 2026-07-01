@@ -634,10 +634,6 @@ async def fetch_stmify(session: aiohttp.ClientSession, probe: bool = False, prob
 
 async def fetch_dlhd(session: aiohttp.ClientSession, probe: bool = False, probe_timeout: int = 5) -> list[dict]:
     log.info("Fetching DLHD...")
-    api_key = os.environ.get("DLHD_API_KEY", "")
-    if not api_key:
-        log.info("DLHD: no API key, skipping")
-        return []
 
     resolved = await resolve_dlhd_from_mirror_page(session)
     if not resolved:
@@ -645,99 +641,72 @@ async def fetch_dlhd(session: aiohttp.ClientSession, probe: bool = False, probe_
         return []
     log.info("DLHD: using domain %s", resolved)
 
-    channels = []
-    api_url = f"https://{resolved}/daddyapi.php?key={api_key}&endpoint=channels"
-    result = await fetch_text_safe(api_url, session, headers={
+    scrape_url = f"https://{resolved}/24-7-channels.php"
+    scrape_result = await fetch_text_safe(scrape_url, session, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     })
-    if not isinstance(result, Exception):
-        try:
-            items = json.loads(result)
-            if isinstance(items, list):
-                for item in items:
-                    cid = item.get("channel_id", "")
-                    if cid:
-                        channels.append({
-                            "id": cid,
-                            "name": item.get("channel_name", ""),
-                            "streamUrl": f"https://{resolved}/watch.php?id={cid}",
-                            "logoUrl": item.get("logo_url") or None,
-                            "category": "Sports",
-                            "country": None,
-                            "language": None,
-                            "quality": None,
-                            "source": "DLHD",
-                            "headers": {},
-                            "drmKeyId": None,
-                            "drmKey": None,
-                        })
-        except json.JSONDecodeError:
-            pass
-    if not channels:
-        log.warning("DLHD: API returned 0 channels; trying scrape fallback")
-        scrape_url = f"https://{resolved}/24-7-channels.php"
-        scrape_result = await fetch_text_safe(scrape_url, session, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        })
-        if not isinstance(scrape_result, Exception):
-            from html.parser import HTMLParser
-            class CardParser(HTMLParser):
-                def __init__(self):
-                    super().__init__()
-                    self.channels = []
-                    self._in_card = False
-                    self._current = {}
-                    self._in_title = False
-                def handle_starttag(self, tag, attrs):
-                    attrs_dict = dict(attrs)
-                    classes = attrs_dict.get("class", "")
-                    if "card" in classes or "channel-item" in classes or "col" in classes:
-                        self._in_card = True
-                        self._current = {"id": attrs_dict.get("data-id", ""), "name": "", "logo": ""}
-                        href = attrs_dict.get("href", "")
-                        if "watch.php?id=" in href:
-                            self._current["id"] = href.split("watch.php?id=")[1].split("&")[0]
-                    if tag == "img" and self._in_card:
-                        self._current["logo"] = attrs_dict.get("src", "")
-                    if tag in ("h2", "h3", "a", "div") and self._in_card:
-                        cls = attrs_dict.get("class", "")
-                        if "title" in cls or "name" in cls or "card-title" in cls or not cls:
-                            self._in_title = True
-                def handle_data(self, data):
-                    if self._in_title and self._in_card:
-                        self._current["name"] = data.strip()
-                def handle_endtag(self, tag):
-                    if self._in_title:
-                        self._in_title = False
-                    if self._in_card and tag in ("div", "a", "li"):
-                        if self._current.get("id", "").isdigit() or (
-                            self._current.get("id", "").isdigit()
-                        ):
-                            cid = self._current.get("id", "")
-                            name = self._current.get("name", "")
-                            if cid and name and len(name) >= 2:
-                                self.channels.append({
-                                    "id": cid,
-                                    "name": name,
-                                    "streamUrl": f"https://{resolved}/watch.php?id={cid}",
-                                    "logoUrl": self._current.get("logo", "") or None,
-                                    "category": "Sports",
-                                    "country": None,
-                                    "language": None,
-                                    "quality": None,
-                                    "source": "DLHD",
-                                    "headers": {},
-                                    "drmKeyId": None,
-                                    "drmKey": None,
-                                })
-                        self._in_card = False
-                        self._current = {}
-            parser = CardParser()
-            parser.feed(scrape_result)
-            channels = parser.channels
-            log.info("DLHD scrape: %d channels", len(channels))
+    if isinstance(scrape_result, Exception):
+        log.warning("DLHD scrape failed: %s — skipping", scrape_result)
+        return []
 
-    log.info("DLHD: %d channels", len(channels))
+    from html.parser import HTMLParser
+
+    class DlhdParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.channels: list[dict] = []
+            self._in_card = False
+            self._current: dict = {}
+            self._in_title = False
+            self._resolved = resolved
+
+        def handle_starttag(self, tag, attrs):
+            attrs_dict = dict(attrs)
+            classes = attrs_dict.get("class", "")
+            if "card" in classes or "channel-item" in classes or "col-sm" in classes:
+                self._in_card = True
+                self._current = {"id": attrs_dict.get("data-id", ""), "name": "", "logo": ""}
+                href = attrs_dict.get("href", "")
+                if "watch.php?id=" in href:
+                    self._current["id"] = href.split("watch.php?id=")[1].split("&")[0]
+            if tag == "img" and self._in_card:
+                self._current["logo"] = attrs_dict.get("src", "")
+            if tag in ("h2", "h3", "a", "div") and self._in_card:
+                cls = attrs_dict.get("class", "")
+                if any(c in cls for c in ("title", "name", "card-title")) or not cls:
+                    self._in_title = True
+
+        def handle_data(self, data):
+            if self._in_title and self._in_card:
+                self._current["name"] = data.strip()
+
+        def handle_endtag(self, tag):
+            self._in_title = False
+            if self._in_card and tag in ("div", "a", "li"):
+                cid = self._current.get("id", "")
+                name = self._current.get("name", "")
+                if cid.isdigit() and name and len(name) >= 2:
+                    self.channels.append({
+                        "id": cid,
+                        "name": name,
+                        "streamUrl": f"https://{self._resolved}/watch.php?id={cid}",
+                        "logoUrl": self._current.get("logo", "") or None,
+                        "category": "Sports",
+                        "country": None,
+                        "language": None,
+                        "quality": None,
+                        "source": "DLHD",
+                        "headers": {},
+                        "drmKeyId": None,
+                        "drmKey": None,
+                    })
+                self._in_card = False
+                self._current = {}
+
+    parser = DlhdParser()
+    parser.feed(scrape_result)
+    channels = parser.channels
+    log.info("DLHD: %d channels (scraped)", len(channels))
     return channels
 
 

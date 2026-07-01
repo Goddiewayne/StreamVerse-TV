@@ -33,7 +33,6 @@ jobs:
 
       - name: Build hosted index
         env:
-          DLHD_API_KEY: ${{ secrets.DLHD_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python tools/hosted-index-builder/build_index.py \

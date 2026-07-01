@@ -41,7 +41,9 @@ jobs:
 
       - name: Run merge pipeline
         working-directory: pipeline/build-tools/merge-pipeline
-        run: gradle run -q --args="${{ github.workspace }}/data"
+        env:
+          OUTPUT_DIR: ${{ github.workspace }}/data
+        run: gradle run -q
 
       - name: Commit merged.json to streamverse-data
         working-directory: data

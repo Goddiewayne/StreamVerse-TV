@@ -20,18 +20,92 @@ class DlhdClient @Inject constructor(
     private val gson: Gson,
     private val dispatchers: StreamVerseDispatchers,
 ) {
-    private val baseUrl = "https://dlhd.pk"
-    private val apiUrl = "$baseUrl/daddyapi.php"
+    private val mirrorPageUrl = "https://daddylive.pk/"
+    private val fallbackDomains = listOf(
+        "https://dlhd.st",
+        "https://dlhd.pk",
+        "https://dlhd.sx",
+        "https://dlhd.com",
+        "https://dlhd.to",
+    )
+    @Volatile private var baseUrl: String = fallbackDomains.first()
+    private val apiUrl get() = "$baseUrl/daddyapi.php"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS)   // hard cap per request so a slow scrape can't stall startup
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 
+    /** Discover the current working DLHD domain from the official mirror page. */
+    private fun discoverDomain(): String {
+        // 1. Try the mirror page for authoritative list
+        try {
+            val mirrorHtml = fetchUrl(mirrorPageUrl)
+            val mirrorRegex = Regex("""https?://(?:www\.)?(dlhd\.[a-z]+)(?=/|"|')""")
+            val candidates = mirrorRegex.findAll(mirrorHtml)
+                .map { it.groupValues[1] }
+                .distinct()
+                .toList()
+            if (candidates.isNotEmpty()) {
+                android.util.Log.d("DlhdClient", "Mirrors from $mirrorPageUrl: $candidates")
+                for (domain in candidates) {
+                    try {
+                        val req = Request.Builder()
+                            .url("https://$domain/")
+                            .headers(browserHeaders())
+                            .head()
+                            .build()
+                        val resp = client.newCall(req).execute()
+                        val alive = resp.code < 400
+                        resp.close()
+                        if (alive) {
+                            val newUrl = "https://$domain"
+                            if (newUrl != baseUrl) {
+                                android.util.Log.w("DlhdClient", "Domain rotated: $baseUrl -> $newUrl")
+                                baseUrl = newUrl
+                            }
+                            return newUrl
+                        }
+                    } catch (_: Exception) { continue }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("DlhdClient", "Mirror page unreachable: ${e.message}")
+        }
+
+        // 2. Fallback: probe the known domains directly
+        for (domain in fallbackDomains) {
+            try {
+                val req = Request.Builder()
+                    .url(domain)
+                    .headers(browserHeaders())
+                    .head()
+                    .build()
+                val resp = client.newCall(req).execute()
+                if (resp.code < 400) {
+                    resp.close()
+                    if (domain != baseUrl) {
+                        android.util.Log.w("DlhdClient", "Domain rotated (fallback): $baseUrl -> $domain")
+                        baseUrl = domain
+                    }
+                    return domain
+                }
+                resp.close()
+            } catch (_: Exception) { continue }
+        }
+
+        return baseUrl // stick with current if all fail
+    }
+
+    private val domainInitialized: Unit by lazy { discoverDomain() }
+
+    private fun ensureDomain() { domainInitialized }
+
     suspend fun fetchChannelsFromApi(apiKey: String): Result<List<DlhdChannel>> =
         withContext(dispatchers.io) {
+            ensureDomain()
             runCatching {
                 val json = fetchUrl("$apiUrl?key=$apiKey&endpoint=channels")
                 val channels: List<DlhdChannelDto> = gson.fromJson(
@@ -43,6 +117,7 @@ class DlhdClient @Inject constructor(
 
     suspend fun fetchChannelsFromScrape(): Result<List<DlhdChannel>> =
         withContext(dispatchers.io) {
+            ensureDomain()
             runCatching {
                 val doc = Jsoup.connect("$baseUrl/24-7-channels.php")
                     .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -54,6 +129,7 @@ class DlhdClient @Inject constructor(
 
     suspend fun fetchSchedule(apiKey: String): Result<List<DlhdSchedule>> =
         withContext(dispatchers.io) {
+            ensureDomain()
             runCatching {
                 val json = fetchUrl("$apiUrl?key=$apiKey&endpoint=schedule")
                 val scheduleMap: Map<String, Map<String, List<DlhdScheduleDayDto>>> = gson.fromJson(
@@ -78,6 +154,7 @@ class DlhdClient @Inject constructor(
 
     suspend fun resolveStreamUrl(channelId: String): Result<String> =
         withContext(dispatchers.io) {
+            ensureDomain()
             runCatching {
                 resolveDirectStream(channelId)
                     ?: "$baseUrl/watch.php?id=$channelId"
@@ -118,6 +195,7 @@ class DlhdClient @Inject constructor(
 
     suspend fun fetchCategoriesFromSchedule(apiKey: String): Result<List<String>> =
         withContext(dispatchers.io) {
+            ensureDomain()
             runCatching {
                 val doc = Jsoup.connect(baseUrl)
                     .userAgent("Mozilla/5.0")

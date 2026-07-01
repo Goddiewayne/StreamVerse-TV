@@ -193,6 +193,72 @@ async def probe_url(url: str, session: aiohttp.ClientSession, timeout_sec: int =
         return False
 
 
+# ── Domain rotation ────────────────────────────────────────────────────────────
+
+MIRROR_PAGE_RE = re.compile(r'https?://(?:www\.)?([^/"\']+(?:\.\w+)+)(?=/|"|\')')
+
+async def resolve_dlhd_from_mirror_page(session: aiohttp.ClientSession) -> str | None:
+    """
+    Fetch the official mirror directory at https://daddylive.pk/ and return the
+    first *responding* mirror domain from its list (tried in page order).
+    Falls back to the hardcoded known-domains list if the page is unreachable.
+    """
+    mirror_page = "https://daddylive.pk/"
+    try:
+        text = await fetch_text(mirror_page, session, timeout=aiohttp.ClientTimeout(total=15, connect=10))
+    except Exception as e:
+        log.warning("Mirror page %s unreachable: %s — using fallback list", mirror_page, e)
+        return await _probe_fallback_domains(["dlhd.st", "dlhd.pk", "dlhd.sx", "dlhd.com", "dlhd.to"], session)
+
+    # Extract all https:// mirror URLs found on the page
+    candidates: list[str] = []
+    for m in MIRROR_PAGE_RE.finditer(text):
+        domain = m.group(1)
+        # Only consider dlhd.* domains from the page
+        if domain.startswith("dlhd.") or domain.startswith("daddylive."):
+            if domain not in candidates:
+                candidates.append(domain)
+
+    if not candidates:
+        log.warning("No mirrors found on %s — using fallback list", mirror_page)
+        return await _probe_fallback_domains(["dlhd.st", "dlhd.pk", "dlhd.sx"], session)
+
+    log.info("Mirrors discovered from %s: %s", mirror_page, candidates)
+    for domain in candidates:
+        url = f"https://{domain}/"
+        try:
+            async with session.head(
+                url, timeout=aiohttp.ClientTimeout(total=8, connect=5),
+                ssl=False, allow_redirects=True,
+            ) as resp:
+                if resp.status < 400:
+                    log.info("Resolved DLHD domain: %s (status %d)", domain, resp.status)
+                    return domain
+        except Exception:
+            log.debug("DLHD mirror %s did not respond — trying next", domain)
+            continue
+
+    log.warning("No DLHD mirror responded — trying fallback list")
+    return await _probe_fallback_domains(["dlhd.st", "dlhd.pk", "dlhd.sx", "dlhd.com", "dlhd.to"], session)
+
+
+async def _probe_fallback_domains(domains: list[str], session: aiohttp.ClientSession) -> str | None:
+    """Try each fallback domain, return the first that responds."""
+    for domain in domains:
+        url = f"https://{domain}/"
+        try:
+            async with session.head(
+                url, timeout=aiohttp.ClientTimeout(total=8, connect=5),
+                ssl=False, allow_redirects=True,
+            ) as resp:
+                if resp.status < 400:
+                    log.info("Fallback domain resolved: %s (status %d)", domain, resp.status)
+                    return domain
+        except Exception:
+            continue
+    return None
+
+
 # ── Source fetchers ──────────────────────────────────────────────────────────
 
 async def fetch_iptv(session: aiohttp.ClientSession, probe: bool = False, probe_timeout: int = 5) -> list[dict]:
@@ -569,35 +635,108 @@ async def fetch_stmify(session: aiohttp.ClientSession, probe: bool = False, prob
 async def fetch_dlhd(session: aiohttp.ClientSession, probe: bool = False, probe_timeout: int = 5) -> list[dict]:
     log.info("Fetching DLHD...")
     api_key = os.environ.get("DLHD_API_KEY", "")
+    if not api_key:
+        log.info("DLHD: no API key, skipping")
+        return []
+
+    resolved = await resolve_dlhd_from_mirror_page(session)
+    if not resolved:
+        log.warning("DLHD: no domain resolved, skipping")
+        return []
+    log.info("DLHD: using domain %s", resolved)
+
     channels = []
-    if api_key:
-        api_url = f"https://dlhd.pk/daddyapi.php?key={api_key}&endpoint=channels"
-        result = await fetch_text_safe(api_url, session, headers={
+    api_url = f"https://{resolved}/daddyapi.php?key={api_key}&endpoint=channels"
+    result = await fetch_text_safe(api_url, session, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    })
+    if not isinstance(result, Exception):
+        try:
+            items = json.loads(result)
+            if isinstance(items, list):
+                for item in items:
+                    cid = item.get("channel_id", "")
+                    if cid:
+                        channels.append({
+                            "id": cid,
+                            "name": item.get("channel_name", ""),
+                            "streamUrl": f"https://{resolved}/watch.php?id={cid}",
+                            "logoUrl": item.get("logo_url") or None,
+                            "category": "Sports",
+                            "country": None,
+                            "language": None,
+                            "quality": None,
+                            "source": "DLHD",
+                            "headers": {},
+                            "drmKeyId": None,
+                            "drmKey": None,
+                        })
+        except json.JSONDecodeError:
+            pass
+    if not channels:
+        log.warning("DLHD: API returned 0 channels; trying scrape fallback")
+        scrape_url = f"https://{resolved}/24-7-channels.php"
+        scrape_result = await fetch_text_safe(scrape_url, session, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         })
-        if not isinstance(result, Exception):
-            try:
-                items = json.loads(result)
-                if isinstance(items, list):
-                    for item in items:
-                        cid = item.get("channel_id", "")
-                        if cid:
-                            channels.append({
-                                "id": cid,
-                                "name": item.get("channel_name", ""),
-                                "streamUrl": f"https://dlhd.pk/watch.php?id={cid}",
-                                "logoUrl": item.get("logo_url") or None,
-                                "category": "Sports",
-                                "country": None,
-                                "language": None,
-                                "quality": None,
-                                "source": "DLHD",
-                                "headers": {},
-                                "drmKeyId": None,
-                                "drmKey": None,
-                            })
-            except json.JSONDecodeError:
-                pass
+        if not isinstance(scrape_result, Exception):
+            from html.parser import HTMLParser
+            class CardParser(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.channels = []
+                    self._in_card = False
+                    self._current = {}
+                    self._in_title = False
+                def handle_starttag(self, tag, attrs):
+                    attrs_dict = dict(attrs)
+                    classes = attrs_dict.get("class", "")
+                    if "card" in classes or "channel-item" in classes or "col" in classes:
+                        self._in_card = True
+                        self._current = {"id": attrs_dict.get("data-id", ""), "name": "", "logo": ""}
+                        href = attrs_dict.get("href", "")
+                        if "watch.php?id=" in href:
+                            self._current["id"] = href.split("watch.php?id=")[1].split("&")[0]
+                    if tag == "img" and self._in_card:
+                        self._current["logo"] = attrs_dict.get("src", "")
+                    if tag in ("h2", "h3", "a", "div") and self._in_card:
+                        cls = attrs_dict.get("class", "")
+                        if "title" in cls or "name" in cls or "card-title" in cls or not cls:
+                            self._in_title = True
+                def handle_data(self, data):
+                    if self._in_title and self._in_card:
+                        self._current["name"] = data.strip()
+                def handle_endtag(self, tag):
+                    if self._in_title:
+                        self._in_title = False
+                    if self._in_card and tag in ("div", "a", "li"):
+                        if self._current.get("id", "").isdigit() or (
+                            self._current.get("id", "").isdigit()
+                        ):
+                            cid = self._current.get("id", "")
+                            name = self._current.get("name", "")
+                            if cid and name and len(name) >= 2:
+                                self.channels.append({
+                                    "id": cid,
+                                    "name": name,
+                                    "streamUrl": f"https://{resolved}/watch.php?id={cid}",
+                                    "logoUrl": self._current.get("logo", "") or None,
+                                    "category": "Sports",
+                                    "country": None,
+                                    "language": None,
+                                    "quality": None,
+                                    "source": "DLHD",
+                                    "headers": {},
+                                    "drmKeyId": None,
+                                    "drmKey": None,
+                                })
+                        self._in_card = False
+                        self._current = {}
+            parser = CardParser()
+            parser.feed(scrape_result)
+            channels = parser.channels
+            log.info("DLHD scrape: %d channels", len(channels))
+
     log.info("DLHD: %d channels", len(channels))
     return channels
 

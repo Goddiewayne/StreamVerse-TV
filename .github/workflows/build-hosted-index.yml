@@ -37,9 +37,7 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python tools/hosted-index-builder/build_index.py \
-            --output-dir ./dist \
-            --probe \
-            --probe-timeout 5
+            --output-dir ./dist
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

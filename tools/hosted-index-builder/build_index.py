@@ -984,36 +984,36 @@ async def main():
 
     connector = aiohttp.TCPConnector(limit=100, limit_per_host=20, force_close=True)
     async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = {name: fetcher(session, args.probe, args.probe_timeout) for name, fetcher in SOURCE_FETCHERS}
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
         all_channels: list[dict] = []
         seen_ids: set[str] = set()
 
-        for name, fetcher in SOURCE_FETCHERS:
-            try:
-                start = time.time()
-                channels = await fetcher(session, args.probe, args.probe_timeout)
-                elapsed = time.time() - start
-                log.info("%s: %d channels in %.1fs", name, len(channels), elapsed)
+        for name, result in zip(tasks.keys(), results):
+            if isinstance(result, Exception):
+                log.error("%s failed: %s", name, result)
+                continue
 
-                if args.probe and channels:
-                    channels = await probe_channels(channels, session, args.probe_timeout)
+            channels = result
+            elapsed = 0  # timing not tracked per-source in parallel mode
+            log.info("%s: %d channels", name, len(channels))
 
-                if channels:
-                    write_index(channels, name, output_dir)
+            if args.probe and channels:
+                channels = await probe_channels(channels, session, args.probe_timeout)
 
-                # Skip premium from combined channels.json (too large — 121K channels / 44 MB)
-                # App fetches premium on-device via Tier 2 if needed.
-                if name == "premium":
-                    log.info("Skipping premium from combined index (too large — %d channels)", len(channels))
-                    continue
+            if channels:
+                write_index(channels, name, output_dir)
 
-                for ch in channels:
-                    cid = ch.get("id", "")
-                    if cid and cid not in seen_ids:
-                        seen_ids.add(cid)
-                        all_channels.append(ch)
+            if name == "premium":
+                log.info("Skipping premium from combined index (too large — %d channels)", len(channels))
+                continue
 
-            except Exception as e:
-                log.error("%s failed: %s", name, e)
+            for ch in channels:
+                cid = ch.get("id", "")
+                if cid and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    all_channels.append(ch)
 
         log.info("Combined total: %d channels (unique by id)", len(all_channels))
         if all_channels:

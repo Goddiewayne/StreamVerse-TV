@@ -663,7 +663,8 @@ async def fetch_dlhd(session: aiohttp.ClientSession, probe: bool = False, probe_
         def handle_starttag(self, tag, attrs):
             attrs_dict = dict(attrs)
             classes = attrs_dict.get("class", "")
-            if "card" in classes or "channel-item" in classes or "col-sm" in classes:
+            class_set = set(classes.split())
+            if "card" in class_set or "channel-item" in class_set or "col-sm" in class_set:
                 self._in_card = True
                 self._current = {"id": attrs_dict.get("data-id", ""), "name": "", "logo": ""}
                 href = attrs_dict.get("href", "")

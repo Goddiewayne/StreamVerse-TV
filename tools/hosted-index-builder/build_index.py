@@ -891,7 +891,11 @@ async def fetch_text_safe(url: str, session: aiohttp.ClientSession, headers: dic
         h = {**HEADERS, **(headers or {})}
         async with session.get(url, timeout=t, headers=h, ssl=False) as resp:
             resp.raise_for_status()
-            return await resp.text()
+            try:
+                return await resp.text()
+            except UnicodeDecodeError:
+                raw = await resp.read()
+                return raw.decode("latin-1")
     except Exception as e:
         return e
 

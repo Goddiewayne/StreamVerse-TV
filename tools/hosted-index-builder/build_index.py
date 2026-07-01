@@ -714,26 +714,71 @@ async def fetch_dlhd(session: aiohttp.ClientSession, probe: bool = False, probe_
 async def fetch_youtube_tv(session: aiohttp.ClientSession, probe: bool = False, probe_timeout: int = 5) -> list[dict]:
     log.info("Fetching YOUTUBE_TV...")
     curated = [
+        # ── Global News ─────────────────────────────────
         ("al_jazeera", "Al Jazeera English", "UCfi-iTtY4IqYBg1gR0VxQxA", "News", "en", ""),
         ("france24_en", "France 24 English", "UCEjB3pD6s7uRw3VkPbvX0Q", "News", "en", ""),
+        ("france24_fr", "France 24 Français", "UCQoW_fBqgY5V7u_eHxw0gA", "News", "fr", ""),
         ("dw_news", "DW News", "UCX7kFqGgXn7oQzGQ2qX8Q", "News", "en", ""),
         ("trt_world", "TRT World", "UC7fWeaHhqgM4g_VdGQKjQ", "News", "en", ""),
         ("cgtn", "CGTN", "UCGhz5KQpF0hN8JLJpXq6w", "News", "en", ""),
         ("nhk_world", "NHK World Japan", "UCSPEjw6zKvCJQj6y7y4Q", "News", "en", ""),
         ("wion", "WION", "UC_gUM8rL-Lrg6O3Qa5xQ", "News", "en", ""),
+        ("scmp", "South China Morning Post", "UC4cV9g1xWGLz5qVwzYb0Xw", "News", "en", ""),
+        ("euronews", "Euronews", "UCXoJ2p7KjRZGZ4qZpLjRzQ", "News", "en", ""),
         ("reuters", "Reuters", "UCd9I8vBO7L3jVHa6mX2N3Q", "News", "en", ""),
+        ("ap", "Associated Press", "UCqa1H1HkS5IHicP54rvC3wQ", "News", "en", ""),
         ("bloomberg", "Bloomberg TV", "UCUMZ7gohGI9HcU9VNsFgM_g", "Business", "en", ""),
+
+        # ── United States ───────────────────────────────
         ("abc_news", "ABC News", "UCBi2mrWuNuyYy4gbM6fU18Q", "News", "en", "US"),
         ("cbs_news", "CBS News", "UC8p1vwvWtl6T73JiExfWs1g", "News", "en", "US"),
         ("nbc_news", "NBC News", "UCeY0bbntWzzVIaj2vt3QoXg", "News", "en", "US"),
-        ("sky_news", "Sky News", "UCoLrcjPV5PbUrUyXq5mjc_A", "News", "en", "GB"),
-        ("bbc_news", "BBC News", "UC16niRr50-MSBQi3zBNENrg", "News", "en", "GB"),
-        ("cbc_news_yt", "CBC News", "UC5p1vwvWtl6T73JiExfWs1g", "News", "en", "CA"),
         ("fox_weather", "Fox Weather", "UCXq6uB3v5JpTJxQh_5a_xQ", "Weather", "en", "US"),
+        ("newsmax", "Newsmax", "UC8q6UB1WN1bT2v3R3Pp6f5A", "News", "en", "US"),
         ("nasa", "NASA TV", "UCX7j_jgHqHjQ0eXyfX6X1w", "Science", "en", "US"),
         ("pbs_newshour", "PBS NewsHour", "UCx9JqXK7tqZxK8Y7y3Zy5g", "News", "en", "US"),
-        ("euronews", "Euronews", "UCXoJ2p7KjRZGZ4qZpLjRzQ", "News", "en", ""),
-        ("scmp", "South China Morning Post", "UC4cV9g1xWGLz5qVwzYb0Xw", "News", "en", ""),
+        ("tyt", "The Young Turks", "UC1yB4mZNrXx4X5b_MCkQ7g", "News", "en", "US"),
+        ("fox_business", "Fox Business", "UCC0E4J2hVwQq0CqWq3ZxXw", "Business", "en", "US"),
+
+        # ── United Kingdom ──────────────────────────────
+        ("sky_news", "Sky News", "UCoLrcjPV5PbUrUyXq5mjc_A", "News", "en", "GB"),
+        ("bbc_news", "BBC News", "UC16niRr50-MSBQi3zBNENrg", "News", "en", "GB"),
+        ("gb_news", "GB News", "UCkPmJjN0V9XzXjZq0Zx1YQ", "News", "en", "GB"),
+
+        # ── Canada ──────────────────────────────────────
+        ("cbc_news_yt", "CBC News", "UC5p1vwvWtl6T73JiExfWs1g", "News", "en", "CA"),
+
+        # ── Nigeria ─────────────────────────────────────
+        ("channels_tv", "Channels Television", "UCEXGDNclvmg6RW0vipJYsTQ", "News", "en", "NG"),
+        ("tvc_news", "TVC News Nigeria", "UCgp4A6I8LCWrhUzn-5SbKvA", "News", "en", "NG"),
+        ("arise_news", "Arise News", "UCyEJX-kSj0kOOCS7Qlq2G7g", "News", "en", "NG"),
+        ("nta_network", "NTA Network", "UCLLWAXn5F415g2kNAcE_T1g", "News", "en", "NG"),
+        ("tv360_nigeria", "TV360 Nigeria", "UCBzu4YqGiBxBD8pq8NiBuKw", "News", "en", "NG"),
+        ("news_central", "News Central Africa", "UCPLKy4Ypb4mfblbjJI8Aljw", "News", "en", "NG"),
+
+        # ── South Africa ────────────────────────────────
+        ("sabc_news", "SABC News", "UC8yH-uI81UUtEMDsowQyx1g", "News", "en", "ZA"),
+        ("newzroom_afrika", "Newzroom Afrika", "UCQMML3hAsx-Mz9j9ZN0tThQ", "News", "en", "ZA"),
+        ("enca", "eNCA", "UCI3RT5PGmdi1KVp9FG_CneA", "News", "en", "ZA"),
+
+        # ── Kenya ───────────────────────────────────────
+        ("citizen_tv_kenya", "Citizen TV Kenya", "UChBQgieUidXV1CmDxSdRm3g", "News", "en", "KE"),
+        ("ktn_news_kenya", "KTN News Kenya", "UCKVsdeoHExltrWMuK0hOWmg", "News", "en", "KE"),
+        ("ntv_kenya", "NTV Kenya", "UCqBJ47FjJcl61fmSbcadAVg", "News", "en", "KE"),
+
+        # ── Ghana ───────────────────────────────────────
+        ("joynews_ghana", "JoyNews Ghana", "UChd1DEecCRlxaa0-hvPACCw", "News", "en", "GH"),
+
+        # ── Uganda ──────────────────────────────────────
+        ("ntv_uganda", "NTV Uganda", "UCwga1dPCqBddbtq5KYRii2g", "News", "en", "UG"),
+
+        # ── India ───────────────────────────────────────
+        ("dd_news_india", "DD News India", "UCKwucPzHZ7zCUIf7If-Wo1g", "News", "en", "IN"),
+        ("times_now", "Times Now", "UC6RJ7-PaXg6TIH2BzZfTV7w", "News", "en", "IN"),
+
+        # ── More World News ─────────────────────────────
+        ("rt_news", "RT News", "UCpwvZwUam-URkxB7g4USKpg", "News", "en", ""),
+        ("bbc_persian", "BBC Persian", "UCHZk9MrT3DGWmVqdsj5y0EA", "News", "fa", ""),
     ]
 
     channels = []
@@ -755,7 +800,11 @@ async def fetch_youtube_tv(session: aiohttp.ClientSession, probe: bool = False, 
 
     api_key = os.environ.get("YOUTUBE_API_KEY", "")
     if api_key:
-        queries = ["live news channel", "live tv stream", "live sports", "24/7 live stream"]
+        queries = [        "live news channel", "live tv stream", "live sports", "24/7 live stream",
+            "Africa news live", "Nigeria news live", "Kenya news live",
+            "South Africa news live", "Ghana news live", "Uganda news live",
+            "Ethiopia news live", "Egypt news live", "Morocco news live",
+            "India news live", "Brazil news live", "Japan news live"]
         seen_ids = {c["id"] for c in channels}
         for query in queries:
             search_url = (

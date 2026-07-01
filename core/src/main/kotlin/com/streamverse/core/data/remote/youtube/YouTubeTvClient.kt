@@ -37,10 +37,104 @@ class YouTubeTvClient @Inject constructor(
         private const val MAX_API_RESULTS = 50
 
         private val API_SEARCH_QUERIES = listOf(
+            // ── General ─────────────────────────────────
             "live news channel",
             "live tv stream",
             "live sports",
             "24/7 live stream",
+            "live tv news channel",
+
+            // ── Africa-wide ──────────────────────────────
+            "Africa news live",
+            "African news channel",
+            "African live tv",
+
+            // ── Nigeria ──────────────────────────────────
+            "Nigeria news live",
+            "Nigerian live tv",
+            "Naija news live",
+
+            // ── South Africa ─────────────────────────────
+            "South Africa news live",
+            "South African live tv",
+            "Mzansi live news",
+
+            // ── Kenya ────────────────────────────────────
+            "Kenya news live",
+            "Kenyan live tv",
+
+            // ── Ghana ────────────────────────────────────
+            "Ghana news live",
+            "Ghana live tv",
+
+            // ── Uganda ───────────────────────────────────
+            "Uganda news live",
+            "Ugandan live tv",
+
+            // ── Tanzania ─────────────────────────────────
+            "Tanzania news live",
+            "Tanzania live tv",
+
+            // ── Ethiopia ─────────────────────────────────
+            "Ethiopia news live",
+            "Ethiopian live tv",
+
+            // ── Egypt ────────────────────────────────────
+            "Egypt news live",
+            "مصر الأخبار بث مباشر",
+
+            // ── Morocco ──────────────────────────────────
+            "Morocco news live",
+            "المغرب الأخبار بث مباشر",
+
+            // ── Senegal / Francophone Africa ─────────────
+            "Senegal news live",
+            "Afrique actualités en direct",
+            "chaîne d'information en direct",
+
+            // ── Angola / Lusophone Africa ────────────────
+            "Angola notícias ao vivo",
+            "Angola live tv",
+
+            // ── Other Africa ─────────────────────────────
+            "Zambia news live",
+            "Zimbabwe news live",
+            "Botswana news live",
+            "Mozambique notícias ao vivo",
+            "Cameroon news live",
+            "Ivory Coast news live",
+            "Rwanda news live",
+            "Somalia news live",
+            "Sudan news live",
+            "DRC news live",
+
+            // ── Rest of World ────────────────────────────
+            "India news live",
+            "Brazil news live",
+            "Brazil ao vivo notícias",
+            "Japan news live",
+            "Japan live tv",
+            "China news live",
+            "Russia news live",
+            "Turkey news live",
+            "Mexico news live",
+            "Indonesia news live",
+            "Pakistan news live",
+            "Bangladesh news live",
+            "Philippines news live",
+            "Vietnam news live",
+            "Thailand news live",
+            "Germany news live",
+            "France news live",
+            "Spain news live",
+            "Italy news live",
+            "UK news live",
+            "Australia news live",
+            "Argentina news live",
+            "Colombia news live",
+            "Peru news live",
+            "Chile news live",
+            "Venezuela news live",
         )
     }
 
@@ -302,5 +396,37 @@ class YouTubeTvClient @Inject constructor(
 
         // ── Canada ───────────────────────────────────────────────────────
         "cbc_news_yt" to YouTubeTvEntry("cbc_news_yt", "CBC News", "UC5p1vwvWtl6T73JiExfWs1g", "News", "en", "CA"),
+
+        // ── Nigeria ─────────────────────────────────────────────────────
+        "channels_tv" to YouTubeTvEntry("channels_tv", "Channels Television", "UCEXGDNclvmg6RW0vipJYsTQ", "News", "en", "NG"),
+        "tvc_news" to YouTubeTvEntry("tvc_news", "TVC News Nigeria", "UCgp4A6I8LCWrhUzn-5SbKvA", "News", "en", "NG"),
+        "arise_news" to YouTubeTvEntry("arise_news", "Arise News", "UCyEJX-kSj0kOOCS7Qlq2G7g", "News", "en", "NG"),
+        "nta_network" to YouTubeTvEntry("nta_network", "NTA Network", "UCLLWAXn5F415g2kNAcE_T1g", "News", "en", "NG"),
+        "tv360_nigeria" to YouTubeTvEntry("tv360_nigeria", "TV360 Nigeria", "UCBzu4YqGiBxBD8pq8NiBuKw", "News", "en", "NG"),
+        "news_central" to YouTubeTvEntry("news_central", "News Central Africa", "UCPLKy4Ypb4mfblbjJI8Aljw", "News", "en", "NG"),
+
+        // ── South Africa ────────────────────────────────────────────────
+        "sabc_news" to YouTubeTvEntry("sabc_news", "SABC News", "UC8yH-uI81UUtEMDsowQyx1g", "News", "en", "ZA"),
+        "newzroom_afrika" to YouTubeTvEntry("newzroom_afrika", "Newzroom Afrika", "UCQMML3hAsx-Mz9j9ZN0tThQ", "News", "en", "ZA"),
+        "enca" to YouTubeTvEntry("enca", "eNCA", "UCI3RT5PGmdi1KVp9FG_CneA", "News", "en", "ZA"),
+
+        // ── Kenya ────────────────────────────────────────────────────────
+        "citizen_tv_kenya" to YouTubeTvEntry("citizen_tv_kenya", "Citizen TV Kenya", "UChBQgieUidXV1CmDxSdRm3g", "News", "en", "KE"),
+        "ktn_news_kenya" to YouTubeTvEntry("ktn_news_kenya", "KTN News Kenya", "UCKVsdeoHExltrWMuK0hOWmg", "News", "en", "KE"),
+        "ntv_kenya" to YouTubeTvEntry("ntv_kenya", "NTV Kenya", "UCqBJ47FjJcl61fmSbcadAVg", "News", "en", "KE"),
+
+        // ── Ghana ────────────────────────────────────────────────────────
+        "joynews_ghana" to YouTubeTvEntry("joynews_ghana", "JoyNews Ghana", "UChd1DEecCRlxaa0-hvPACCw", "News", "en", "GH"),
+
+        // ── Uganda ────────────────────────────────────────────────────────
+        "ntv_uganda" to YouTubeTvEntry("ntv_uganda", "NTV Uganda", "UCwga1dPCqBddbtq5KYRii2g", "News", "en", "UG"),
+
+        // ── India ────────────────────────────────────────────────────────
+        "dd_news_india" to YouTubeTvEntry("dd_news_india", "DD News India", "UCKwucPzHZ7zCUIf7If-Wo1g", "News", "en", "IN"),
+        "times_now" to YouTubeTvEntry("times_now", "Times Now", "UC6RJ7-PaXg6TIH2BzZfTV7w", "News", "en", "IN"),
+
+        // ── More World News ──────────────────────────────────────────────
+        "rt_news" to YouTubeTvEntry("rt_news", "RT News", "UCpwvZwUam-URkxB7g4USKpg", "News", "en", ""),
+        "bbc_persian" to YouTubeTvEntry("bbc_persian", "BBC Persian", "UCHZk9MrT3DGWmVqdsj5y0EA", "News", "fa", ""),
     )
 }

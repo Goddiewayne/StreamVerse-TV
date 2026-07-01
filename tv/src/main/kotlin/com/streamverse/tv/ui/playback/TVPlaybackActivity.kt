@@ -179,13 +179,13 @@ class TVPlaybackActivity : ComponentActivity() {
         android.util.Log.w("TVPlayback", "connect watchdog fired — advancing to next source")
         tryNextSource()
     }
-    private val connectTimeoutMs = 25_000L
+    private val connectTimeoutMs = 15_000L
 
     // ── Validation recovery ────────────────────────────────────────────────────────────
     // If a manually selected source fails validation within this timeout, auto-recover
     // to the default verified source.
     private val validationRecoveryRunnable = Runnable { validationRecoveryFire() }
-    private val validationTimeoutMs = 15_000L
+    private val validationTimeoutMs = 8_000L
     private fun validationRecoveryFire() {
         if (sessionManager.getSelectionMode() == PlaybackSessionManager.SourceSelectionMode.MANUAL &&
             !sessionManager.isSourceValidated()) {
@@ -469,8 +469,10 @@ class TVPlaybackActivity : ComponentActivity() {
         progress.visibility = View.VISIBLE
         channelNameView.text = target.numberedDisplayName()
         val n = zapChannels.size
-        val up   = zapChannels[(zapIndex - 1 + n) % n].numberedDisplayName()
-        val down = zapChannels[(zapIndex + 1) % n].numberedDisplayName()
+        val upIdx = (zapIndex - 1 + n) % n
+        val downIdx = (zapIndex + 1) % n
+        val up   = zapChannels[upIdx].numberedDisplayName()
+        val down = zapChannels[downIdx].numberedDisplayName()
         val q = channelQualityLabel(target)
         channelMetaView.text = buildString {
             target.category?.takeIf { it.isNotBlank() }?.let { append(it) }
@@ -481,6 +483,9 @@ class TVPlaybackActivity : ComponentActivity() {
 
         // SEAMLESS: pre-load the previewed channel so committing to it swaps instantly.
         schedulePreload(target)
+        // Also preload neighbors so rapid up/down zaps are instant.
+        schedulePreload(zapChannels[upIdx])
+        schedulePreload(zapChannels[downIdx])
     }
 
     /**
@@ -1050,7 +1055,7 @@ class TVPlaybackActivity : ComponentActivity() {
             for (i in 0 until currentOptionIndex) {
                 sourceOptions.getOrNull(i)?.first?.let { tried.add(it) }
             }
-            val failover = sourceSelector.selectForFailover(ch, failing, tried)
+            val failover = sourceSelector.selectForFailover(ch, failing, tried) { streamPreResolver.hasCached(ch.id, it) }
             if (failover != null) {
                 val nextIdx = sourceOptions.indexOfFirst { it.first == failover.type }
                 if (nextIdx >= 0) {
@@ -1689,13 +1694,13 @@ class TVPlaybackActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_CHANNEL_ID = "channelId"
-        private const val OVERLAY_TIMEOUT_MS = 4_000L
+        private const val OVERLAY_TIMEOUT_MS = 3_000L
         // Channel guide auto-dismiss after inactivity.
-        private const val GUIDE_TIMEOUT_MS = 8_000L
+        private const val GUIDE_TIMEOUT_MS = 5_000L
         // Idle time after the last ▲/▼ press before the surfed-to channel actually tunes.
-        private const val ZAP_TUNE_DELAY_MS = 450L
+        private const val ZAP_TUNE_DELAY_MS = 200L
         // Settle time before a highlighted/previewed channel begins pre-loading for a seamless swap.
-        private const val PRELOAD_DEBOUNCE_MS = 200L
+        private const val PRELOAD_DEBOUNCE_MS = 100L
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }

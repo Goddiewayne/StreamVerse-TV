@@ -152,14 +152,14 @@ class PlayerViewModel @Inject constructor(
     private companion object {
         // How long a source gets to actually start playing before fallback gives up on it. Covers a
         // dead URL that hangs or a source stuck retrying — not just hard errors.
-        // Increased from 10s to 25s to give slow CDNs time to respond and prevent premature
-        // source switching when the stream starts playing but the watchdog hasn't been cancelled.
-        const val CONNECT_TIMEOUT_MS = 25_000L
+        // Reduced from 25s to 15s for faster failover when stream URLs are cached via StreamPreResolver.
+        const val CONNECT_TIMEOUT_MS = 15_000L
 
         // How long a manually selected source gets to start playing before we auto-recover
         // to the default verified source. Separate from connect timeout because it gates the
         // full "validation" window, not just the initial connection.
-        const val VALIDATION_TIMEOUT_MS = 15_000L
+        // Reduced from 15s to 8s for faster recovery.
+        const val VALIDATION_TIMEOUT_MS = 8_000L
     }
 
     /**
@@ -406,22 +406,29 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
-     * Pre-resolve the channels immediately above and below the current one on the surf dial, so
-     * the next ◀/▶ flip starts from a warm cache (sub-second, no spinner). Mirrors the TV app's
-     * focus/zap pre-loading. Best-effort and debounced inside [StreamPreResolver].
+     * Pre-resolve the channels immediately above and below the current one on the surf dial (plus
+     * next-2 in each direction), so the next ◀/▶ flip starts from a warm cache (sub-second, no
+     * spinner). Mirrors the TV app's focus/zap pre-loading. Best-effort and debounced inside
+     * [StreamPreResolver].
      */
     private fun preResolveNeighbors() {
         if (surfChannels.size < 2) return
         if (dataSaverEnabled) return  // no background network activity on metered connections
         val n = surfChannels.size
         val idx = surfChannels.indexOfFirst { it.id == currentChannelId }.coerceAtLeast(0)
-        streamPreResolver.preResolve(surfChannels[(idx + 1) % n])
-        streamPreResolver.preResolve(surfChannels[(idx - 1 + n) % n])
+        // Pre-resolve up to 2 channels in each direction for faster multi-hop surfing
+        for (d in 1..2) {
+            streamPreResolver.preResolve(surfChannels[(idx + d) % n])
+            streamPreResolver.preResolve(surfChannels[(idx - d + n) % n])
+        }
+        // Also pre-resolve all sources for the immediate neighbors for instant failover
+        streamPreResolver.preResolveAll(surfChannels[(idx + 1) % n])
+        streamPreResolver.preResolveAll(surfChannels[(idx - 1 + n) % n])
     }
 
     /**
-     * Pre-build and prepare ExoPlayer instances for the surf neighbours so the next
-     * ◀/▶ flip is instant — the player is already at STATE_READY with decoders
+     * Pre-build and prepare ExoPlayer instances for the surf neighbours (up to 2 in each direction)
+     * so the next ◀/▶ flip is instant — the player is already at STATE_READY with decoders
      * initialised.  Best-effort; failures are silently ignored.
      */
     private fun preloadNeighborPlayers(app: Application, current: Channel) {
@@ -430,15 +437,18 @@ class PlayerViewModel @Inject constructor(
         if (dataSaverEnabled) return  // no pre-buffering on metered connections
         val n = surfChannels.size
         val idx = surfChannels.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
-        val next = surfChannels[(idx + 1) % n]
-        val prev = surfChannels[(idx - 1 + n) % n]
-        viewModelScope.launch {
-            val typeNext = sourceSelector.selectDefaultVerifiedSource(next).type
-            playbackPreloader.preload(app, next, typeNext)
-        }
-        viewModelScope.launch {
-            val typePrev = sourceSelector.selectDefaultVerifiedSource(prev).type
-            playbackPreloader.preload(app, prev, typePrev)
+        // Preload up to 2 channels in each direction
+        for (d in 1..2) {
+            val next = surfChannels[(idx + d) % n]
+            val prev = surfChannels[(idx - d + n) % n]
+            viewModelScope.launch {
+                val typeNext = sourceSelector.selectDefaultVerifiedSource(next).type
+                playbackPreloader.preload(app, next, typeNext)
+            }
+            viewModelScope.launch {
+                val typePrev = sourceSelector.selectDefaultVerifiedSource(prev).type
+                playbackPreloader.preload(app, prev, typePrev)
+            }
         }
     }
 
@@ -559,7 +569,12 @@ class PlayerViewModel @Inject constructor(
             sourceHealth.recordFailure(ch.id, failing)
             channelHealthEngine.recordPlaybackFailure(ch.id, failing, "advanceToNextSource")
         }
-        val failoverSelection = sourceSelector.selectForFailover(ch, failing ?: SourceType.BROADCASTER, triedSources)
+        val failoverSelection = sourceSelector.selectForFailover(
+            ch,
+            failing ?: SourceType.BROADCASTER,
+            triedSources,
+            hasCachedStream = { streamPreResolver.hasAnyCached(ch.id, it) }
+        )
         if (failoverSelection == null) return false
         triedSources.add(failoverSelection.type)
         sessionManager.markSourceSelected(failoverSelection.type, PlaybackSessionManager.SourceSelectionMode.FAILOVER)

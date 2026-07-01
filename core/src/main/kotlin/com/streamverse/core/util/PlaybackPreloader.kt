@@ -22,8 +22,9 @@ import javax.inject.Singleton
  * initialised and the first segment buffered.  Call [preload] after the current channel
  * starts playing, then [take] when the user selects a preloaded channel.
  *
- * Memory cap: [MAX_PRELOADS] players (~60-120 MB total for 3).  LRU eviction.
- * 3 slots cover: {current-1, current+1, current+2} — the typical surf range.
+ * Memory cap: [MAX_PRELOADS] players (~150-300 MB total for 6).  LRU eviction.
+ * 6 slots cover: {current-2, current-1, current+1, current+2, current+3, guide highlight} —
+ * extended surf/guide range for near-instant switching in any direction.
  */
 @Singleton
 class PlaybackPreloader @Inject constructor(
@@ -101,6 +102,19 @@ class PlaybackPreloader @Inject constructor(
     }
 
     /**
+     * Preload the best source for a channel (determined by SourceSelector) without
+     * requiring the caller to know the source type. Uses the default verified source.
+     */
+    suspend fun preloadBest(
+        appContext: Context,
+        channel: Channel,
+        sourceSelector: com.streamverse.core.util.SourceSelector,
+    ) {
+        val selection = sourceSelector.selectDefaultVerifiedSource(channel)
+        preload(appContext, channel, selection.type)
+    }
+
+    /**
      * Take (remove) a preloaded player from the pool.  The caller takes ownership of the
      * ExoPlayer lifecycle.  Returns `null` if no preloaded player exists for this key.
      */
@@ -113,10 +127,14 @@ class PlaybackPreloader @Inject constructor(
         pool.clear()
     }
 
+    /** Check if a preloaded player exists for the given channel and source type. */
+    fun hasPreloaded(channelId: String, type: SourceType): Boolean =
+        pool.containsKey(cacheKey(channelId, type))
+
     private fun cacheKey(channelId: String, type: SourceType) = "$channelId:$type"
 
     companion object {
-        private const val MAX_PRELOADS = 3
+        private const val MAX_PRELOADS = 6
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
     }

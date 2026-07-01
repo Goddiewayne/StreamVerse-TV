@@ -31,6 +31,6 @@ jobs:
         with:
           personal_token: ${{ secrets.STREAMVERSE_DATA_TOKEN }}
           external_repository: Goddiewayne/streamverse-data
-          publish_branch: main
+          publish_branch: gh-pages
           publish_dir: ./dist
           enable_jekyll: false

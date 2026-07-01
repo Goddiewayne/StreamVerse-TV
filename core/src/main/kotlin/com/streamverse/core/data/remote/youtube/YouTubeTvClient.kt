@@ -209,7 +209,7 @@ class YouTubeTvClient @Inject constructor(
             "EU" to setOf("GB", "DE", "FR", "IT", "ES", "NL", "BE", "CH", "AT", "SE", "NO", "DK", "FI", "PT", "IE", "PL", "CZ", "HU", "RO", "GR", "BG"),
             "AS" to setOf("CN", "JP", "KR", "IN", "ID", "TH", "VN", "MY", "PH", "SG"),
             "SA" to setOf("BR", "AR", "CL", "CO", "PE"),
-            "AF" to setOf("ZA", "NG", "KE", "EG", "GH", "MA"),
+            "AF" to setOf("ZA", "NG", "KE", "EG", "GH", "MA", "UG", "TZ"),
             "OC" to setOf("AU", "NZ"),
         )
         val myRegion = regions.entries.firstOrNull { it.value.any { c -> c.equals(this, ignoreCase = true) } }?.key ?: return false
@@ -404,6 +404,7 @@ class YouTubeTvClient @Inject constructor(
         "nta_network" to YouTubeTvEntry("nta_network", "NTA Network", "UCLLWAXn5F415g2kNAcE_T1g", "News", "en", "NG"),
         "tv360_nigeria" to YouTubeTvEntry("tv360_nigeria", "TV360 Nigeria", "UCBzu4YqGiBxBD8pq8NiBuKw", "News", "en", "NG"),
         "news_central" to YouTubeTvEntry("news_central", "News Central Africa", "UCPLKy4Ypb4mfblbjJI8Aljw", "News", "en", "NG"),
+        "ait_nigeria" to YouTubeTvEntry("ait_nigeria", "AIT Africa Independent Television", "UCBJvTeuSKEpZZV3E5EKEd4g", "News", "en", "NG"),
 
         // ── South Africa ────────────────────────────────────────────────
         "sabc_news" to YouTubeTvEntry("sabc_news", "SABC News", "UC8yH-uI81UUtEMDsowQyx1g", "News", "en", "ZA"),
@@ -414,12 +415,16 @@ class YouTubeTvClient @Inject constructor(
         "citizen_tv_kenya" to YouTubeTvEntry("citizen_tv_kenya", "Citizen TV Kenya", "UChBQgieUidXV1CmDxSdRm3g", "News", "en", "KE"),
         "ktn_news_kenya" to YouTubeTvEntry("ktn_news_kenya", "KTN News Kenya", "UCKVsdeoHExltrWMuK0hOWmg", "News", "en", "KE"),
         "ntv_kenya" to YouTubeTvEntry("ntv_kenya", "NTV Kenya", "UCqBJ47FjJcl61fmSbcadAVg", "News", "en", "KE"),
+        "k24_tv_kenya" to YouTubeTvEntry("k24_tv_kenya", "K24 TV Kenya", "UCt3SE-Mvs3WwP7UW-PiFdqQ", "News", "en", "KE"),
 
         // ── Ghana ────────────────────────────────────────────────────────
         "joynews_ghana" to YouTubeTvEntry("joynews_ghana", "JoyNews Ghana", "UChd1DEecCRlxaa0-hvPACCw", "News", "en", "GH"),
 
         // ── Uganda ────────────────────────────────────────────────────────
         "ntv_uganda" to YouTubeTvEntry("ntv_uganda", "NTV Uganda", "UCwga1dPCqBddbtq5KYRii2g", "News", "en", "UG"),
+
+        // ── Tanzania ─────────────────────────────────────────────────────
+        "azam_tv_tz" to YouTubeTvEntry("azam_tv_tz", "Azam TV Tanzania", "UCpHiA0taMn231yDiUeqoANw", "General", "sw", "TZ"),
 
         // ── India ────────────────────────────────────────────────────────
         "dd_news_india" to YouTubeTvEntry("dd_news_india", "DD News India", "UCKwucPzHZ7zCUIf7If-Wo1g", "News", "en", "IN"),

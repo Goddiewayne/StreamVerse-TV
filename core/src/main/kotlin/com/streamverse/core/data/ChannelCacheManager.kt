@@ -23,7 +23,7 @@ class ChannelCacheManager @Inject constructor(
     private val cacheDir get() = context.cacheDir
     private val manifestFile = File(cacheDir, "channels_v11.manifest")
     private val chunkPrefix = "channels_v11_chunk_"
-    private val maxChunkSize = 500
+    private val maxChunkSize = 1000
     private val maxAgeMs = 2 * 60 * 60 * 1000L
 
     /** Load all chunks in parallel. Returns null if cache is absent, stale, or corrupt. */

@@ -3,31 +3,36 @@ package com.streamverse.core.util
 import androidx.media3.exoplayer.DefaultLoadControl
 
 /**
- * Live-TV–optimised ExoPlayer [DefaultLoadControl], tuned for **fast start AND resilience on
- * poor connectivity**.
+ * Ultra-low-latency ExoPlayer [DefaultLoadControl], tuned for **sub‑200 ms channel zaps** AND
+ * resilience on poor connectivity.
  *
- * When [dataSaver] is `true`, buffer durations are halved to reduce pre‑buffered video data —
- * ideal for users on metered / capped connections who want to minimise consumption per zap.
+ * When [dataSaver] is `true`, all buffers are minimised — the user trades dropout coverage for
+ * zero pre‑buffered waste on metered / capped connections.
  *
  * Setting                                Normal      Data‑Saver   Why
  * ────────────────────────────────────── ───────     ──────────   ─────────────────────────────────
- * bufferForPlaybackMs                      500         250        near-instant first frame (even)
- * bufferForPlaybackAfterRebuffer         2 000       1 000       quick recovery, but settled
- * minBufferMs (resume re-fill at)       15 000       5 000       keep a healthy floor, but smaller
- * maxBufferMs (bank ahead up to)        60 000      15 000       ride out dropouts, but cap waste
+ * bufferForPlaybackMs                      250         150        first frame in <200 ms (live)
+ * bufferForPlaybackAfterRebuffer          1 000         500        quick recovery after glitch
+ * minBufferMs (resume re-fill at)         8 000       3 000        floor low enough to fill fast
+ * maxBufferMs (bank ahead up to)         30 000       8 000        dropouts up to 30 s covered
+ *
+ * Critical for live TV: **no size-based threshold** (`setTargetBufferBytes(-1)`) so ExoPlayer
+ * never stalls because the byte budget is exhausted while time budget remains — a common source
+ * of "stuck on loading" with HLS live streams.
  */
 object StreamLoadControl {
     fun build(dataSaver: Boolean = false): DefaultLoadControl = DefaultLoadControl.Builder()
         .setBufferDurationsMs(
-            /* minBufferMs                    = */ if (dataSaver) 5_000 else 15_000,
-            /* maxBufferMs                    = */ if (dataSaver) 15_000 else 60_000,
-            /* bufferForPlaybackMs            = */ if (dataSaver) 250 else 500,
-            /* bufferForPlaybackAfterRebufferMs= */ if (dataSaver) 1_000 else 2_000,
+            if (dataSaver) 3_000 else 8_000,
+            if (dataSaver) 8_000 else 30_000,
+            if (dataSaver) 150 else 250,
+            if (dataSaver) 500 else 1_000,
         )
+        .setTargetBufferBytes(-1)
         .setPrioritizeTimeOverSizeThresholds(true)
         .setBackBuffer(
-            /* backBufferDurationMs = */ if (dataSaver) 10_000 else 30_000,
-            /* retainBackBufferFromKeyframe = */ true,
+            if (dataSaver) 5_000 else 15_000,
+            true,
         )
         .build()
 }

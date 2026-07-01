@@ -163,8 +163,7 @@ class EpgManager @Inject constructor(
     private fun buildTvgIdMap(channels: List<Channel>): Map<String, String> {
         val map = mutableMapOf<String, String>()
         for (ch in channels) {
-            val iptvSource = ch.sources[SourceType.IPTV] ?: ch.sources[SourceType.FREE_TV]
-                ?: ch.sources[SourceType.FAST_TV] ?: ch.sources[SourceType.FREE_CHANNEL]
+            val iptvSource = ch.sources[SourceType.GLOBAL_INDEX] ?: ch.sources[SourceType.FREE_CHANNEL]
             val refId = iptvSource?.referenceId ?: continue
             if (refId.contains(".")) map[refId] = ch.id
         }

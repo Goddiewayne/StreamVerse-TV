@@ -14,7 +14,7 @@ import javax.inject.Singleton
 
 /**
  * User-facing channel source providers that can be toggled on/off in Settings.
- * Maps to one or more [SourceType]s in the repository.
+ * Maps to a [SourceType] in the repository.
  *
  * Each provider belongs to a [ProviderGroup] that drives UI organisation.
  */
@@ -23,118 +23,58 @@ enum class SourceProvider(
     val description: String,
     val group: ProviderGroup,
 ) {
-    // ── Official & Verified ────────────────────────────────────────────────
-    VERIFIED(
-        "Verified Channels",
-        "Hand-picked channels independently verified to work",
-        ProviderGroup.VERIFIED_CURATED,
-    ),
+    // ── Alpha: Local Assets (instant, no network) ─────────────────────────
     BROADCASTER(
         "Official Broadcasters",
         "Direct broadcaster & satellite feeds from official CDNs",
-        ProviderGroup.OFFICIAL_BROADCASTER,
+        ProviderGroup.ALPHA,
     ),
 
-    // ── Global Aggregators ─────────────────────────────────────────────────
-    IPTV(
+    // ── Beta: Aggregated Index (hosted index + M3U fallback) ──────────────
+    GLOBAL_INDEX(
         "Global Channels",
-        "10,000+ live channels from the iptv-org community index",
-        ProviderGroup.GLOBAL_AGGREGATOR,
-    ),
-    FREE_TV(
-        "Free-to-Air TV",
-        "Curated HD broadcast channels from Free-TV/IPTV",
-        ProviderGroup.GLOBAL_AGGREGATOR,
-    ),
-    FAST_TV(
-        "Regional Live TV",
-        "Direct live streams from iptv-org supplemental playlists",
-        ProviderGroup.GLOBAL_AGGREGATOR,
+        "10,000+ live channels from iptv-org and community M3U playlists",
+        ProviderGroup.BETA,
     ),
 
-    // ── Free Streaming Services ────────────────────────────────────────────
+    // ── Gamma: API Sources (individual API/scrape clients) ────────────────
     FREE_CHANNEL(
         "Free Streaming Services",
         "Pluto TV, Plex, Roku, Tubi, Xumo & Distro TV direct CDN playlists",
-        ProviderGroup.FAST_SERVICE,
+        ProviderGroup.GAMMA,
     ),
     YOUTUBE_TV(
         "YouTube TV",
         "Live TV channels streaming on YouTube, prioritized by your region",
-        ProviderGroup.FAST_SERVICE,
+        ProviderGroup.GAMMA,
     ),
-
-    // ── Sports & Events ────────────────────────────────────────────────────
     SPORTS_EVENTS(
         "Sports & Events",
         "Live sports, news & entertainment channels",
-        ProviderGroup.SPORTS_EVENTS,
+        ProviderGroup.GAMMA,
     ),
-
-    // ── World TV ───────────────────────────────────────────────────────────
     WORLD_TV(
         "World TV",
         "Middle Eastern, African & international channels",
-        ProviderGroup.WORLD_TV,
+        ProviderGroup.GAMMA,
     ),
-
-    // ── Premium ────────────────────────────────────────────────────────────
-    PREMIUM(
-        "Premium TV",
-        "HBO, Showtime, Starz, sports & more premium channels",
-        ProviderGroup.PREMIUM,
-    ),
-
-    // ── Audio ──────────────────────────────────────────────────────────────
     RADIO(
         "Radio",
         "Live internet radio stations from around the world",
-        ProviderGroup.AUDIO,
+        ProviderGroup.GAMMA,
     ),
-
-    // ── Deprecated aliases (backward compat for shared prefs keys) ─────────
-    @Deprecated("Use SPORTS_EVENTS", ReplaceWith("SPORTS_EVENTS"))
-    DLHD("Live Sports & TV", "Deprecated — use Sports & Events", ProviderGroup.SPORTS_EVENTS),
-    @Deprecated("Use WORLD_TV", ReplaceWith("WORLD_TV"))
-    STMIFY("World TV", "Deprecated — use World TV", ProviderGroup.WORLD_TV),
-    @Deprecated("Use VERIFIED", ReplaceWith("VERIFIED"))
-    INDEPENDENT("Featured", "Deprecated — use Verified Channels", ProviderGroup.VERIFIED_CURATED),
     ;
 
     companion object {
-        /** Maps old deprecated names to their canonical replacement. */
-        val canonical: Map<SourceProvider, SourceProvider> = mapOf(
-            DLHD to SPORTS_EVENTS,
-            STMIFY to WORLD_TV,
-            INDEPENDENT to VERIFIED,
-        )
-
-        fun canonicalOf(provider: SourceProvider): SourceProvider =
-            canonical[provider] ?: provider
-
         /** Resolves a [SourceType] to the user-facing [SourceProvider]. */
-        fun forType(type: SourceType): SourceProvider {
-            val canonicalType = SourceType.canonicalOf(type)
-            return forCanonicalType(canonicalType)
-        }
-
-        private fun forCanonicalType(type: SourceType): SourceProvider = when (type) {
-            SourceType.VERIFIED -> VERIFIED
+        fun forType(type: SourceType): SourceProvider = when (type) {
+            SourceType.GLOBAL_INDEX -> GLOBAL_INDEX
+            SourceType.BROADCASTER -> BROADCASTER
+            SourceType.FREE_CHANNEL -> FREE_CHANNEL
             SourceType.SPORTS_EVENTS -> SPORTS_EVENTS
             SourceType.WORLD_TV -> WORLD_TV
-            SourceType.IPTV -> IPTV
-            SourceType.FREE_TV -> FREE_TV
-            SourceType.FAST_TV -> FAST_TV
-            SourceType.FREE_CHANNEL -> FREE_CHANNEL
-            SourceType.PREMIUM -> PREMIUM
-            SourceType.BROADCASTER -> BROADCASTER
-            SourceType.RADIO -> RADIO
             SourceType.YOUTUBE_TV -> YOUTUBE_TV
-            // Keep the compiler happy — deprecated values still exist
-            SourceType.INDEPENDENT -> VERIFIED
-            SourceType.DLHD -> SPORTS_EVENTS
-            SourceType.STMIFY_FREE -> WORLD_TV
-            SourceType.STMIFY_PREMIUM -> WORLD_TV
+            SourceType.RADIO -> RADIO
         }
     }
 }
@@ -171,24 +111,11 @@ class SourcePreferences @Inject constructor(
 
     fun priorityOrder(): List<SourceProvider> = _priorityOrderFlow.value
 
-    fun isEnabled(provider: SourceProvider): Boolean {
-        val canonical = SourceProvider.canonicalOf(provider)
-        // Check canonical key first, then fall back to deprecated key for migration
-        return if (prefs.contains(canonical.name)) {
-            prefs.getBoolean(canonical.name, true)
-        } else {
-            val deprecated = SourceProvider.canonical.entries.firstOrNull { it.value == canonical }?.key
-            if (deprecated != null && prefs.contains(deprecated.name)) {
-                prefs.getBoolean(deprecated.name, true)
-            } else {
-                true
-            }
-        }
-    }
+    fun isEnabled(provider: SourceProvider): Boolean =
+        _enabledFlow.value[provider] ?: true
 
     fun setEnabled(provider: SourceProvider, enabled: Boolean) {
-        val canonical = SourceProvider.canonicalOf(provider)
-        prefs.edit().putBoolean(canonical.name, enabled).apply()
+        prefs.edit().putBoolean(provider.name, enabled).apply()
         _enabledFlow.value = readAll()
     }
 
@@ -213,26 +140,10 @@ class SourcePreferences @Inject constructor(
         }
     }
 
-    /** Migrates any old deprecated SharedPreferences keys to the new canonical key. */
-    fun migrate() {
-        SourceProvider.canonical.forEach { (deprecated, canonical) ->
-            if (prefs.contains(deprecated.name) && !prefs.contains(canonical.name)) {
-                val value = prefs.getBoolean(deprecated.name, true)
-                prefs.edit().putBoolean(canonical.name, value).apply()
-            }
-        }
-    }
-
     private fun readAll(): Map<SourceProvider, Boolean> {
-        migrate()
         val result = mutableMapOf<SourceProvider, Boolean>()
-        // Canonical providers first
-        for (provider in SourceProvider.entries.filter { it !in SourceProvider.canonical.keys }) {
-            result[provider] = isEnabled(provider)
-        }
-        // Deprecated aliases mirror their canonical value
-        for ((deprecated, canonical) in SourceProvider.canonical) {
-            result[deprecated] = result[canonical] ?: true
+        for (provider in SourceProvider.entries) {
+            result[provider] = prefs.getBoolean(provider.name, true)
         }
         return result
     }

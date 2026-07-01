@@ -266,7 +266,7 @@ class PlayerViewModel @Inject constructor(
                 if (defaultSource != null) {
                     android.util.Log.d("PlayerViewModel", "validationRecovery: manual source failed, recovering to default $defaultSource")
                     sessionManager.recordFailover(
-                        sessionManager.getCurrentPlaybackSource() ?: SourceType.VERIFIED,
+                        sessionManager.getCurrentPlaybackSource() ?: SourceType.BROADCASTER,
                         defaultSource,
                         "validation_timeout",
                         wasUserSelection = true,
@@ -526,7 +526,7 @@ class PlayerViewModel @Inject constructor(
         val cached = streamPreResolver.getCached(channel.id, type)
         val resolved = (cached ?: streamResolver.resolveAll(info)).toMutableList()
         // World TV sources can also fall back to their web player page.
-        if (type == SourceType.WORLD_TV || type == SourceType.STMIFY_FREE || type == SourceType.STMIFY_PREMIUM) {
+        if (type == SourceType.WORLD_TV) {
             val slug = info.referenceId.lowercase().replace("_", "-")
             resolved.add(StreamInfo("https://cdn.stmify.com/primevideo/live-tv/$slug", requiresBrowser = true))
             resolved.add(StreamInfo("https://stmify.com/live-tv/${info.referenceId}/", requiresBrowser = true))
@@ -559,7 +559,7 @@ class PlayerViewModel @Inject constructor(
             sourceHealth.recordFailure(ch.id, failing)
             channelHealthEngine.recordPlaybackFailure(ch.id, failing, "advanceToNextSource")
         }
-        val failoverSelection = sourceSelector.selectForFailover(ch, failing ?: SourceType.VERIFIED, triedSources)
+        val failoverSelection = sourceSelector.selectForFailover(ch, failing ?: SourceType.BROADCASTER, triedSources)
         if (failoverSelection == null) return false
         triedSources.add(failoverSelection.type)
         sessionManager.markSourceSelected(failoverSelection.type, PlaybackSessionManager.SourceSelectionMode.FAILOVER)
@@ -766,7 +766,7 @@ class PlayerViewModel @Inject constructor(
                 if (defaultSource != null) {
                     android.util.Log.d("PlayerViewModel", "onPlayerError: manual source failed before play, recovering to $defaultSource")
                     sessionManager.recordFailover(
-                        sessionManager.getCurrentPlaybackSource() ?: SourceType.VERIFIED,
+                        sessionManager.getCurrentPlaybackSource() ?: SourceType.BROADCASTER,
                         defaultSource,
                         "manual_source_error",
                         wasUserSelection = true,

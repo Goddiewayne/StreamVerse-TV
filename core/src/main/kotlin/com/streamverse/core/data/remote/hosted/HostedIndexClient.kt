@@ -18,8 +18,8 @@ class HostedIndexClient @Inject constructor(
     private val baseUrl = "https://Goddiewayne.github.io/streamverse-data"
 
     private val client = okHttpClient.newBuilder()
-        .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
     data class IndexResponse(
@@ -49,7 +49,25 @@ class HostedIndexClient @Inject constructor(
             val resp = client.newCall(req).execute()
             val body = resp.body?.string() ?: return@runCatching emptyList()
             val parsed = gson.fromJson(body, IndexResponse::class.java)
-            parsed.channels
+            val all = parsed.channels
+            val filtered = ArrayList<HostedChannel>(all.size / 2)
+            for (ch in all) {
+                if (ch.source in KNOWN_SOURCES) filtered.add(ch)
+            }
+            filtered.trimToSize()
+            filtered
         }.getOrDefault(emptyList())
+    }
+
+    companion object {
+        val KNOWN_SOURCES: Set<String> = setOf(
+            "GLOBAL_INDEX", "IPTV", "FREE_TV", "FAST_TV", "PREMIUM",
+            "FREE_CHANNEL", "FREE_LIVE",
+            "RADIO",
+            "WORLD_TV", "STMIFY",
+            "SPORTS_EVENTS", "DLHD",
+            "YOUTUBE_TV",
+            "BROADCASTER", "VERIFIED", "INDEPENDENT",
+        )
     }
 }

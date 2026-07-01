@@ -180,7 +180,7 @@ class ChannelHealthEngine @Inject constructor(
 
     /**
      * Returns the count of channels that have failed repeatedly (high failure streak).
-     * Used by [PremiumClient] to decide whether to trigger source hunting.
+     * Used by the playback pipeline to decide whether source re-resolution is necessary.
      */
     fun degradedSourceCount(): Int = healthMap.count { (_, health) ->
         !health.isLive && health.failureStreak >= 2
@@ -380,12 +380,6 @@ class ChannelHealthEngine @Inject constructor(
         }
 
         // 3. Curated source fallback — only if we have no probe data yet
-        if (channel.sources.containsKey(SourceType.VERIFIED)) {
-            markSource(id, SourceType.VERIFIED, SourceHealthState.AVAILABLE, -1,
-                validationConfidence = PROBE_CONFIDENCE)
-            record(id, true, -1, SourceType.VERIFIED, 0)
-            return
-        }
         if (channel.sources.containsKey(SourceType.BROADCASTER)) {
             markSource(id, SourceType.BROADCASTER, SourceHealthState.AVAILABLE, -1,
                 validationConfidence = PROBE_CONFIDENCE)
@@ -503,7 +497,7 @@ class ChannelHealthEngine @Inject constructor(
 
     private companion object {
         const val MAX_CONCURRENT = 4
-        const val PROBE_TIMEOUT_MS = 4_000L
+        const val PROBE_TIMEOUT_MS = 3_000L
         const val RESOLVE_TIMEOUT_MS = 8_000L
         const val LIVE_TTL_MS = 30 * 60 * 1_000L
         const val UNHEALTHY_BASE_TTL_MS = 5 * 60 * 1_000L

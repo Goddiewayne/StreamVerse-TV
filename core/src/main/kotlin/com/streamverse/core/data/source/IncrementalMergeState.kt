@@ -8,7 +8,7 @@ import com.streamverse.core.domain.model.SourceInfo
 import com.streamverse.core.domain.model.SourceType
 import com.streamverse.core.util.CategoryNormalizer
 import com.streamverse.core.util.ChannelNameFormatter
-import kotlinx.coroutines.yield
+
 
 data class SourceItem(
     val id: String,
@@ -95,8 +95,7 @@ class IncrementalMergeState(
 
     suspend fun mergeSources(items: List<SourceItem>, sourceType: SourceType) {
         var localAdded = 0; var localUpdated = 0
-        for ((idx, item) in items.withIndex()) {
-            if (idx % 500 == 0 && idx > 0) yield()
+        for (item in items) {
             val norm = item.name.lowercase().trim()
             val itemCanonical = ChannelCanonicalizer.canonicalize(item.name, entityResolutionEngine.aliasDictionary)
             val existing: Channel? = synchronized(this) {

@@ -114,9 +114,9 @@ class PlaybackResolver @Inject constructor(
                 )
             } ?: ResolvedPlayback(
                 streamInfo = StreamInfo(url = "", requiresBrowser = false),
-                sourceType = SourceType.IPTV,
+                sourceType = SourceType.GLOBAL_INDEX,
                 sourceInfo = channel.sources.values.firstOrNull()
-                    ?: SourceInfo(type = SourceType.IPTV, referenceId = ""),
+                    ?: SourceInfo(type = SourceType.GLOBAL_INDEX, referenceId = ""),
                 instanceId = "${channel.id}:none",
                 isFallback = true,
             ),
@@ -157,7 +157,7 @@ class PlaybackResolver @Inject constructor(
     }
 
     private val STREAM_NEEDING_RESOLVE = setOf(
-        SourceType.SPORTS_EVENTS, SourceType.DLHD,
-        SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM,
+        SourceType.SPORTS_EVENTS,
+        SourceType.WORLD_TV,
     )
 }

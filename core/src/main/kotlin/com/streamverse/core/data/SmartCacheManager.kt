@@ -5,7 +5,8 @@ import android.util.Log
 import com.streamverse.core.data.epg.EpgManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
+import java.util.LinkedHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,14 +38,14 @@ class SmartCacheManager @Inject constructor(
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private val hotCache = ConcurrentHashMap<String, Any>()
+    private val hotCache: MutableMap<String, Any> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, Any>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Any>) = size > 200
+        }
+    )
     private var hotCacheTime: Long = 0L
 
     fun putHot(key: String, value: Any) {
-        if (hotCache.size > 200) {
-            val keysToRemove = hotCache.keys.take(50)
-            keysToRemove.forEach { hotCache.remove(it) }
-        }
         hotCache[key] = value
         hotCacheTime = System.currentTimeMillis()
     }
@@ -52,7 +53,7 @@ class SmartCacheManager @Inject constructor(
     @Suppress("UNCHECKED_CAST")
     fun <T> getHot(key: String): T? {
         if (System.currentTimeMillis() - hotCacheTime > CacheTier.HOT.maxAgeMs) {
-            hotCache.clear()
+            synchronized(hotCache) { hotCache.clear() }
             return null
         }
         return hotCache[key] as? T

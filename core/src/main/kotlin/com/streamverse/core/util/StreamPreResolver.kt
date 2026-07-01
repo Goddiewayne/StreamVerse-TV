@@ -25,8 +25,8 @@ import javax.inject.Singleton
  *
  * Cache policy
  * ─────────────
- * • 30-entry LRU (covers ~3 visible rows of TV cards)
- * • 3-minute TTL — live stream endpoints sometimes rotate tokens
+ * • 50-entry LRU (covers the full visible grid + nearby rows on TV)
+ * • 5-minute TTL — live stream tokens rotate often enough that 10 min risks stale URLs
  * • Only the primary TV-playable source per channel is pre-resolved; secondary sources are
  *   resolved on demand (they are rarely needed)
  *
@@ -112,11 +112,7 @@ class StreamPreResolver @Inject constructor(
     private fun cacheKey(channelId: String, type: SourceType) = "$channelId:$type"
 
     companion object {
-        /** 10-minute TTL — live stream endpoint tokens rarely rotate more often. */
-        private const val TTL_MS = 10 * 60 * 1_000L
-        /** 10-entry LRU — covers the visible-card row plus a couple of overflow channels. */
-        private const val MAX_ENTRIES = 10
-
-        // Priority is now centralized in ProviderRegistry
+        private const val TTL_MS = 5 * 60 * 1_000L
+        private const val MAX_ENTRIES = 50
     }
 }

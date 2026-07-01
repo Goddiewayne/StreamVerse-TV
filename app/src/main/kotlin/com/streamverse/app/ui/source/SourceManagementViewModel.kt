@@ -444,7 +444,7 @@ class SourceManagementViewModel @Inject constructor(
         enabled: Map<SourceProvider, Boolean>,
         channels: List<Channel>,
     ): SystemSummary {
-        val canonicalProviders = SourceProvider.entries.filter { it !in SourceProvider.canonical.keys }
+        val canonicalProviders = SourceProvider.entries
         val total = canonicalProviders.size
         val enabledCount = enabled.count { it.key in canonicalProviders && it.value }
         val healthy = states.count { it.value.health.isHealthy && it.value.enabled }
@@ -480,7 +480,7 @@ class SourceManagementViewModel @Inject constructor(
         enabled: Map<SourceProvider, Boolean>,
         channels: List<Channel>,
     ): List<ProviderSummary> {
-        val canonicalOnly = SourceProvider.entries.filter { it !in SourceProvider.canonical.keys }
+        val canonicalOnly = SourceProvider.entries
         return canonicalOnly.mapNotNull { sp ->
             val adapters = providers.filter { it.sourceProvider == sp }
             val primaryId = adapters.firstOrNull()?.providerId ?: sp.name

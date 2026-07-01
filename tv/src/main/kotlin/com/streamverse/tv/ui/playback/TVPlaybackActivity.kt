@@ -568,7 +568,7 @@ class TVPlaybackActivity : ComponentActivity() {
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).setUsage(C.USAGE_MEDIA).build(),
-                    true,
+                    false,
                 )
                 .setHandleAudioBecomingNoisy(true)
                 .build()
@@ -1078,7 +1078,7 @@ class TVPlaybackActivity : ComponentActivity() {
             val defaultIdx = sourceOptions.indexOfFirst { it.first == defaultSource }
             if (defaultIdx >= 0) {
                 sessionManager.recordFailover(
-                    sessionManager.getCurrentPlaybackSource() ?: SourceType.VERIFIED,
+                    sessionManager.getCurrentPlaybackSource() ?: SourceType.BROADCASTER,
                     defaultSource,
                     "manual_source_failure",
                     wasUserSelection = true,

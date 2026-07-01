@@ -62,8 +62,7 @@ class SourceResolutionEngine @Inject constructor(
 
         s += info.reliabilityScore * RELIABILITY_WEIGHT
 
-        val canonical = SourceType.canonicalOf(info.type)
-        if (canonical == SourceType.VERIFIED || canonical == SourceType.BROADCASTER) {
+        if (SourceType.canonicalOf(info.type) == SourceType.BROADCASTER) {
             s += CURATED_BONUS
         }
 

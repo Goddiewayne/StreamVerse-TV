@@ -22,7 +22,8 @@ import javax.inject.Singleton
  * initialised and the first segment buffered.  Call [preload] after the current channel
  * starts playing, then [take] when the user selects a preloaded channel.
  *
- * Memory cap: [MAX_PRELOADS] players (~20-40 MB total).  LRU eviction.
+ * Memory cap: [MAX_PRELOADS] players (~60-120 MB total for 3).  LRU eviction.
+ * 3 slots cover: {current-1, current+1, current+2} — the typical surf range.
  */
 @Singleton
 class PlaybackPreloader @Inject constructor(
@@ -77,7 +78,7 @@ class PlaybackPreloader @Inject constructor(
                         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                         .setUsage(C.USAGE_MEDIA)
                         .build(),
-                    /* handleAudioFocus */ true,
+                    /* handleAudioFocus */ false,
                 )
                 .setHandleAudioBecomingNoisy(true)
                 .build()
@@ -115,7 +116,7 @@ class PlaybackPreloader @Inject constructor(
     private fun cacheKey(channelId: String, type: SourceType) = "$channelId:$type"
 
     companion object {
-        private const val MAX_PRELOADS = 1
+        private const val MAX_PRELOADS = 3
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
     }

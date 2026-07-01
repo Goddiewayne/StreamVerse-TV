@@ -5,6 +5,7 @@ import com.google.gson.reflect.TypeToken
 import com.streamverse.core.data.model.RadioStation
 import com.streamverse.core.util.StreamVerseDispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -50,14 +51,15 @@ class RadioBrowserClient @Inject constructor(
                     return@runCatching cachedStations!!
                 }
                 coroutineScope {
-                    val topClickDeferred = async { runCatching { fetchJson("$baseUrl/json/stations/topclick/500") } }
-                    val nigeriaDeferred = async { runCatching { fetchJson("$baseUrl/json/stations/bycountry/Nigeria?limit=200") } }
-                    val southAfricaDeferred = async { runCatching { fetchJson("$baseUrl/json/stations/bycountry/South%20Africa?limit=200") } }
-                    val ghanaDeferred = async { runCatching { fetchJson("$baseUrl/json/stations/bycountry/Ghana?limit=200") } }
+                    val fetches = listOf(
+                        async { fetchJson("$baseUrl/json/stations/topclick/500") },
+                        async { fetchJson("$baseUrl/json/stations/bycountry/Nigeria?limit=200") },
+                        async { fetchJson("$baseUrl/json/stations/bycountry/South%20Africa?limit=200") },
+                        async { fetchJson("$baseUrl/json/stations/bycountry/Ghana?limit=200") },
+                    )
 
                     val allDtos = mutableListOf<RadioStationDto>()
-                    for (deferred in listOf(topClickDeferred, nigeriaDeferred, southAfricaDeferred, ghanaDeferred)) {
-                        val json = deferred.await().getOrNull() ?: continue
+                    for (json in awaitAll(*fetches.toTypedArray())) {
                         try {
                             val dtos: List<RadioStationDto> = gson.fromJson(json, stationListType)
                             allDtos.addAll(dtos)

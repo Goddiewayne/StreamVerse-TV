@@ -82,6 +82,7 @@ import com.streamverse.app.ui.theme.TextSecondary
 import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.source.LifecycleState
 import com.streamverse.core.data.source.ProviderCapability
+import com.streamverse.core.data.source.provider.ProviderGroup
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -343,32 +344,70 @@ private fun SourceProvidersSection(
 ) {
     SectionHeader(title = "Source Providers", subtitle = "Manage source providers")
 
+    val grouped = summaries.groupBy { it.provider.group }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(NavyCard),
     ) {
-        summaries.forEachIndexed { idx, summary ->
-            ProviderCard(
-                summary = summary,
-                isExpanded = expandedProviderId == summary.providerId,
-                onToggle = { onToggleProvider(summary.provider, !summary.isEnabled) },
-                onExpandToggle = {
-                    onExpandedChange(
-                        if (expandedProviderId == summary.providerId) null else summary.providerId
-                    )
-                },
-            )
-            if (idx < summaries.lastIndex) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-                    thickness = 0.5.dp,
+        grouped.forEach { (group, groupSummaries) ->
+            GroupHeader(group = group)
+            groupSummaries.forEachIndexed { idx, summary ->
+                ProviderCard(
+                    summary = summary,
+                    isExpanded = expandedProviderId == summary.providerId,
+                    onToggle = { onToggleProvider(summary.provider, !summary.isEnabled) },
+                    onExpandToggle = {
+                        onExpandedChange(
+                            if (expandedProviderId == summary.providerId) null else summary.providerId
+                        )
+                    },
                 )
+                if (idx < groupSummaries.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 56.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+                        thickness = 0.5.dp,
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun GroupHeader(group: ProviderGroup) {
+    val (tint, accent) = when (group) {
+        ProviderGroup.ALPHA -> CyberCyan to CyberCyan.copy(alpha = 0.08f)
+        ProviderGroup.BETA -> ElectricViolet to ElectricViolet.copy(alpha = 0.08f)
+        ProviderGroup.GAMMA -> LiveGreen to LiveGreen.copy(alpha = 0.08f)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(accent)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = group.displayName,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = tint,
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = group.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 }
 
 @Composable

@@ -5,6 +5,15 @@ import com.streamverse.core.domain.model.SourceType
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Central registry for all source provider metadata.
+ *
+ * Providers are grouped by fetch method into three tiers:
+ * - **Alpha** (tier 0): Local asset JSON — BROADCASTER (instant, no network)
+ * - **Beta**  (tier 1): Hosted index + M3U fallback — GLOBAL_INDEX
+ * - **Gamma** (tier 2): Individual API/scrape clients — FREE_CHANNEL, YOUTUBE_TV,
+ *   WORLD_TV, SPORTS_EVENTS, RADIO
+ */
 @Singleton
 class ProviderRegistry @Inject constructor() {
 
@@ -61,17 +70,13 @@ class ProviderRegistry @Inject constructor() {
         return result
     }
 
-    /** Map a SourceProvider to its canonical SourceType(s), including deprecated aliases. */
+    /** Map a SourceProvider to its SourceType(s). */
     private fun sourceTypesForProvider(provider: SourceProvider): List<SourceType> = when (provider) {
-        SourceProvider.VERIFIED, SourceProvider.INDEPENDENT -> listOf(SourceType.VERIFIED, SourceType.INDEPENDENT)
+        SourceProvider.GLOBAL_INDEX -> listOf(SourceType.GLOBAL_INDEX)
         SourceProvider.BROADCASTER -> listOf(SourceType.BROADCASTER)
-        SourceProvider.IPTV -> listOf(SourceType.IPTV)
-        SourceProvider.FREE_TV -> listOf(SourceType.FREE_TV)
-        SourceProvider.FAST_TV -> listOf(SourceType.FAST_TV)
         SourceProvider.FREE_CHANNEL -> listOf(SourceType.FREE_CHANNEL)
-        SourceProvider.SPORTS_EVENTS, SourceProvider.DLHD -> listOf(SourceType.SPORTS_EVENTS, SourceType.DLHD)
-        SourceProvider.WORLD_TV, SourceProvider.STMIFY -> listOf(SourceType.WORLD_TV, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM)
-        SourceProvider.PREMIUM -> listOf(SourceType.PREMIUM)
+        SourceProvider.SPORTS_EVENTS -> listOf(SourceType.SPORTS_EVENTS)
+        SourceProvider.WORLD_TV -> listOf(SourceType.WORLD_TV)
         SourceProvider.YOUTUBE_TV -> listOf(SourceType.YOUTUBE_TV)
         SourceProvider.RADIO -> listOf(SourceType.RADIO)
     }
@@ -89,20 +94,13 @@ class ProviderRegistry @Inject constructor() {
             (priorityOverride!![canonical] ?: Int.MAX_VALUE).toFloat()
         } else {
             when (canonical) {
-                SourceType.VERIFIED -> 40f
-                SourceType.BROADCASTER -> 38f
-                SourceType.FREE_CHANNEL -> 36f
+                SourceType.BROADCASTER -> 40f
+                SourceType.FREE_CHANNEL -> 38f
+                SourceType.YOUTUBE_TV -> 35f
                 SourceType.SPORTS_EVENTS -> 30f
                 SourceType.WORLD_TV -> 28f
-                SourceType.PREMIUM -> 25f
-                SourceType.FAST_TV -> 20f
-                SourceType.IPTV -> 15f
-                SourceType.FREE_TV -> 14f
-                SourceType.YOUTUBE_TV -> 32f
+                SourceType.GLOBAL_INDEX -> 20f
                 SourceType.RADIO -> 5f
-                // Deprecated types resolved above — unreachable
-                SourceType.INDEPENDENT, SourceType.DLHD,
-                SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM -> 0f
             }
         }
     }
@@ -128,83 +126,15 @@ class ProviderRegistry @Inject constructor() {
     fun overlappingTypes(type: SourceType): Set<SourceType> =
         metadata(type).overlappingTypes
 
-    /** The canonical [SourceType] for the given type (identity if already canonical). */
-    fun canonical(type: SourceType): SourceType = SourceType.canonicalOf(type)
-
     // ── Builders ─────────────────────────────────────────────────────────────
 
     private fun buildMetadata(): Map<SourceType, ProviderMetadata> = mapOf(
-        SourceType.IPTV to ProviderMetadata(
-            id = "iptv_org",
-            displayName = "Global Channels",
-            description = "10,000+ live channels from iptv-org's community-maintained global index",
-            group = ProviderGroup.GLOBAL_AGGREGATOR,
-            geographicScope = GeographicScope.GLOBAL,
-            contentFocus = ContentFocus.GENERAL,
-            reliabilityTier = ReliabilityTier.VERIFIED_COMMUNITY,
-            acquisitionMethod = AcquisitionMethod.M3U_PLAYLIST,
-            authModel = AuthModel.NONE,
-            sourceType = SourceType.IPTV,
-            epgSupported = true,
-            overlappingTypes = setOf(SourceType.FREE_TV, SourceType.FAST_TV),
-        ),
-        SourceType.FREE_TV to ProviderMetadata(
-            id = "free_tv",
-            displayName = "Free-to-Air TV",
-            description = "Curated HD broadcast channels from Free-TV/IPTV community project",
-            group = ProviderGroup.GLOBAL_AGGREGATOR,
-            geographicScope = GeographicScope.GLOBAL,
-            contentFocus = ContentFocus.GENERAL,
-            reliabilityTier = ReliabilityTier.VERIFIED_COMMUNITY,
-            acquisitionMethod = AcquisitionMethod.M3U_PLAYLIST,
-            authModel = AuthModel.NONE,
-            sourceType = SourceType.FREE_TV,
-            overlappingTypes = setOf(SourceType.IPTV, SourceType.FAST_TV),
-        ),
-        SourceType.FAST_TV to ProviderMetadata(
-            id = "fast_tv",
-            displayName = "Regional Live TV",
-            description = "Direct live streams from iptv-org supplemental playlists across 28 countries",
-            group = ProviderGroup.GLOBAL_AGGREGATOR,
-            geographicScope = GeographicScope.MULTI_REGION,
-            contentFocus = ContentFocus.GENERAL,
-            reliabilityTier = ReliabilityTier.VERIFIED_COMMUNITY,
-            acquisitionMethod = AcquisitionMethod.M3U_PLAYLIST,
-            authModel = AuthModel.NONE,
-            sourceType = SourceType.FAST_TV,
-            overlappingTypes = setOf(SourceType.IPTV, SourceType.FREE_TV, SourceType.FREE_CHANNEL),
-        ),
-        SourceType.FREE_CHANNEL to ProviderMetadata(
-            id = "free_channel",
-            displayName = "Free Streaming Services",
-            description = "Pluto TV, Plex, Roku, Tubi, Xumo & Distro TV direct CDN playlists",
-            group = ProviderGroup.FAST_SERVICE,
-            geographicScope = GeographicScope.MULTI_REGION,
-            contentFocus = ContentFocus.GENERAL,
-            reliabilityTier = ReliabilityTier.VERIFIED_COMMUNITY,
-            acquisitionMethod = AcquisitionMethod.M3U_PLAYLIST,
-            authModel = AuthModel.NONE,
-            sourceType = SourceType.FREE_CHANNEL,
-            overlappingTypes = setOf(SourceType.FAST_TV),
-        ),
-        SourceType.VERIFIED to ProviderMetadata(
-            id = "verified",
-            displayName = "Verified Channels",
-            description = "Hand-picked channels from independent CDNs, verified to work",
-            group = ProviderGroup.VERIFIED_CURATED,
-            geographicScope = GeographicScope.GLOBAL,
-            contentFocus = ContentFocus.GENERAL,
-            reliabilityTier = ReliabilityTier.VERIFIED_OFFICIAL,
-            acquisitionMethod = AcquisitionMethod.STATIC_ASSET,
-            authModel = AuthModel.NONE,
-            sourceType = SourceType.VERIFIED,
-            refreshStrategy = RefreshStrategy.WEEKLY,
-        ),
+        // ── Alpha: Local Assets (instant, no network) ────────────────────────
         SourceType.BROADCASTER to ProviderMetadata(
             id = "broadcaster",
             displayName = "Official Broadcasters",
             description = "Direct FTA satellite and broadcaster CDN feeds from official sources",
-            group = ProviderGroup.OFFICIAL_BROADCASTER,
+            group = ProviderGroup.ALPHA,
             geographicScope = GeographicScope.GLOBAL,
             contentFocus = ContentFocus.GENERAL,
             reliabilityTier = ReliabilityTier.VERIFIED_OFFICIAL,
@@ -213,25 +143,66 @@ class ProviderRegistry @Inject constructor() {
             sourceType = SourceType.BROADCASTER,
             refreshStrategy = RefreshStrategy.WEEKLY,
         ),
-        SourceType.PREMIUM to ProviderMetadata(
-            id = "premium",
-            displayName = "Premium TV",
-            description = "HBO, Showtime, Starz, sports & more premium subscription channels",
-            group = ProviderGroup.PREMIUM,
+        // ── Beta: Aggregated Index (hosted index + M3U fallback) ──────────────
+        SourceType.GLOBAL_INDEX to ProviderMetadata(
+            id = "global_index",
+            displayName = "Global Channels",
+            description = "Merged channel index from iptv-org, Free-TV and community M3U playlists",
+            group = ProviderGroup.BETA,
             geographicScope = GeographicScope.GLOBAL,
-            contentFocus = ContentFocus.PREMIUM_MOVIES,
+            contentFocus = ContentFocus.GENERAL,
+            reliabilityTier = ReliabilityTier.VERIFIED_COMMUNITY,
+            acquisitionMethod = AcquisitionMethod.M3U_PLAYLIST,
+            authModel = AuthModel.NONE,
+            sourceType = SourceType.GLOBAL_INDEX,
+            epgSupported = true,
+        ),
+        // ── Gamma: API Sources (individual API/scrape clients) ────────────────
+        SourceType.FREE_CHANNEL to ProviderMetadata(
+            id = "free_channel",
+            displayName = "Free Streaming Services",
+            description = "Pluto TV, Plex, Roku, Tubi, Xumo & Distro TV direct CDN playlists",
+            group = ProviderGroup.GAMMA,
+            geographicScope = GeographicScope.MULTI_REGION,
+            contentFocus = ContentFocus.GENERAL,
+            reliabilityTier = ReliabilityTier.VERIFIED_COMMUNITY,
+            acquisitionMethod = AcquisitionMethod.M3U_PLAYLIST,
+            authModel = AuthModel.NONE,
+            sourceType = SourceType.FREE_CHANNEL,
+        ),
+        SourceType.YOUTUBE_TV to ProviderMetadata(
+            id = "youtube_tv",
+            displayName = "YouTube TV",
+            description = "Live TV channels streaming on YouTube, resolved to HLS via NewPipeExtractor",
+            group = ProviderGroup.GAMMA,
+            geographicScope = GeographicScope.GLOBAL,
+            contentFocus = ContentFocus.GENERAL,
+            reliabilityTier = ReliabilityTier.UNVERIFIED,
+            acquisitionMethod = AcquisitionMethod.REST_API,
+            authModel = AuthModel.NONE,
+            sourceType = SourceType.YOUTUBE_TV,
+            epgSupported = false,
+            refreshStrategy = RefreshStrategy.WEEKLY,
+        ),
+        SourceType.WORLD_TV to ProviderMetadata(
+            id = "world_tv",
+            displayName = "World TV",
+            description = "Middle Eastern, African & international channels with search support",
+            group = ProviderGroup.GAMMA,
+            geographicScope = GeographicScope.GLOBAL,
+            contentFocus = ContentFocus.INTERNATIONAL,
             reliabilityTier = ReliabilityTier.UNVERIFIED,
             acquisitionMethod = AcquisitionMethod.WEB_SCRAPE,
-            authModel = AuthModel.SUBSCRIPTION_REQUIRED,
-            sourceType = SourceType.PREMIUM,
+            authModel = AuthModel.SCRAPE_ACCESS,
+            sourceType = SourceType.WORLD_TV,
             requiresResolution = true,
-            refreshStrategy = RefreshStrategy.ON_DEMAND,
+            overlappingTypes = setOf(SourceType.SPORTS_EVENTS),
         ),
         SourceType.SPORTS_EVENTS to ProviderMetadata(
             id = "sports_events",
             displayName = "Sports & Events",
             description = "Live sports, news & entertainment channels requiring stream resolution",
-            group = ProviderGroup.SPORTS_EVENTS,
+            group = ProviderGroup.GAMMA,
             geographicScope = GeographicScope.GLOBAL,
             contentFocus = ContentFocus.SPORTS,
             reliabilityTier = ReliabilityTier.UNVERIFIED,
@@ -242,40 +213,11 @@ class ProviderRegistry @Inject constructor() {
             epgSupported = true,
             overlappingTypes = setOf(SourceType.WORLD_TV),
         ),
-        SourceType.WORLD_TV to ProviderMetadata(
-            id = "world_tv",
-            displayName = "World TV",
-            description = "Middle Eastern, African & international channels with search support",
-            group = ProviderGroup.WORLD_TV,
-            geographicScope = GeographicScope.GLOBAL,
-            contentFocus = ContentFocus.INTERNATIONAL,
-            reliabilityTier = ReliabilityTier.UNVERIFIED,
-            acquisitionMethod = AcquisitionMethod.WEB_SCRAPE,
-            authModel = AuthModel.SCRAPE_ACCESS,
-            sourceType = SourceType.WORLD_TV,
-            requiresResolution = true,
-            overlappingTypes = setOf(SourceType.SPORTS_EVENTS),
-        ),
-        SourceType.YOUTUBE_TV to ProviderMetadata(
-            id = "youtube_tv",
-            displayName = "YouTube TV",
-            description = "Live TV channels streaming on YouTube, resolved to HLS via NewPipeExtractor",
-            group = ProviderGroup.FAST_SERVICE,
-            geographicScope = GeographicScope.GLOBAL,
-            contentFocus = ContentFocus.GENERAL,
-            reliabilityTier = ReliabilityTier.UNVERIFIED,
-            acquisitionMethod = AcquisitionMethod.REST_API,
-            authModel = AuthModel.NONE,
-            sourceType = SourceType.YOUTUBE_TV,
-            epgSupported = false,
-            refreshStrategy = RefreshStrategy.WEEKLY,
-            overlappingTypes = setOf(SourceType.FREE_CHANNEL),
-        ),
         SourceType.RADIO to ProviderMetadata(
             id = "radio_browser",
             displayName = "Radio Browser",
             description = "Live internet radio stations from the radio-browser.info community database",
-            group = ProviderGroup.AUDIO,
+            group = ProviderGroup.GAMMA,
             geographicScope = GeographicScope.GLOBAL,
             contentFocus = ContentFocus.RADIO_AUDIO,
             reliabilityTier = ReliabilityTier.VERIFIED_COMMUNITY,
@@ -288,16 +230,12 @@ class ProviderRegistry @Inject constructor() {
     )
 
     private fun buildPriority(): Map<SourceType, Int> = mapOf(
-        SourceType.VERIFIED to 0,
-        SourceType.BROADCASTER to 1,
-        SourceType.FREE_CHANNEL to 2,
+        SourceType.BROADCASTER to 0,
+        SourceType.FREE_CHANNEL to 1,
+        SourceType.YOUTUBE_TV to 2,
         SourceType.SPORTS_EVENTS to 3,
         SourceType.WORLD_TV to 4,
-        SourceType.PREMIUM to 5,
-        SourceType.YOUTUBE_TV to 3,
-        SourceType.FAST_TV to 6,
-        SourceType.IPTV to 7,
-        SourceType.FREE_TV to 8,
-        SourceType.RADIO to 9,
+        SourceType.GLOBAL_INDEX to 5,
+        SourceType.RADIO to 6,
     )
 }

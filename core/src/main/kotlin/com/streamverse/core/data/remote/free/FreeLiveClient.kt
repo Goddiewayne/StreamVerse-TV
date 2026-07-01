@@ -34,8 +34,8 @@ class FreeLiveClient @Inject constructor(
     okHttpClient: OkHttpClient,
 ) {
     private val client = okHttpClient.newBuilder()
-        .readTimeout(25, TimeUnit.SECONDS)
-        .callTimeout(40, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
     private var cachedChannels: List<FreeChannel>? = null

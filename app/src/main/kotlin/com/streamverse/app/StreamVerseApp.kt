@@ -20,16 +20,16 @@ class StreamVerseApp : Application(), ImageLoaderFactory {
         ImageLoader.Builder(this)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.25)
+                    .maxSizePercent(0.15)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(100L * 1024 * 1024)
+                    .maxSizeBytes(75L * 1024 * 1024)
                     .build()
             }
-            .crossfade(true)
+            .crossfade(false)
             .respectCacheHeaders(false)
             .build()
 }

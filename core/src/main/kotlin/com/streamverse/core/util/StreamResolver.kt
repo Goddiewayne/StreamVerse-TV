@@ -49,8 +49,8 @@ class StreamResolver @Inject constructor(
 
     suspend fun resolve(sourceInfo: SourceInfo): Result<StreamInfo> {
         return when (SourceType.canonicalOf(sourceInfo.type)) {
-            SourceType.IPTV, SourceType.FREE_TV, SourceType.RADIO, SourceType.FAST_TV,
-            SourceType.VERIFIED, SourceType.PREMIUM, SourceType.BROADCASTER, SourceType.FREE_CHANNEL,
+            SourceType.GLOBAL_INDEX, SourceType.RADIO,
+            SourceType.BROADCASTER, SourceType.FREE_CHANNEL,
             SourceType.YOUTUBE_TV -> {
                 val url = sourceInfo.streamUrl
                 if (url != null) {
@@ -92,9 +92,6 @@ class StreamResolver @Inject constructor(
                     else stmifyClient.resolveStreamUrl(sourceInfo.referenceId).map { StreamInfo(it, requiresBrowser = true) }
                 }
             }
-            // Deprecated types — handled by canonicalOf above, unreachable
-            SourceType.INDEPENDENT, SourceType.DLHD, SourceType.STMIFY_FREE, SourceType.STMIFY_PREMIUM ->
-                Result.failure(Exception("Deprecated source type"))
         }
     }
 
@@ -126,16 +123,12 @@ class StreamResolver @Inject constructor(
 
     suspend fun resolveBestUrl(sources: Map<SourceType, SourceInfo>, preferredQuality: Quality? = null): Result<String> {
         val order = listOf(
-            SourceType.VERIFIED,
             SourceType.BROADCASTER,
             SourceType.FREE_CHANNEL,
             SourceType.YOUTUBE_TV,
             SourceType.SPORTS_EVENTS,
             SourceType.WORLD_TV,
-            SourceType.IPTV,
-            SourceType.FREE_TV,
-            SourceType.FAST_TV,
-            SourceType.PREMIUM,
+            SourceType.GLOBAL_INDEX,
             SourceType.RADIO,
         )
         for (type in order) {

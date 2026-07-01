@@ -80,15 +80,11 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -136,9 +132,6 @@ fun PlayerHost(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var isFullscreen by remember { mutableStateOf(false) }
-    // Fullscreen only makes sense on the full page; leaving it (back to mini) always exits fullscreen.
-    LaunchedEffect(expanded) { if (!expanded) isFullscreen = false }
     val isRadio = state.channel?.sources?.keys?.any { it == SourceType.RADIO } == true
 
     LaunchedEffect(state.customTabUrl) {
@@ -179,20 +172,6 @@ fun PlayerHost(
         val previous = activity?.volumeControlStream
         activity?.volumeControlStream = android.media.AudioManager.STREAM_MUSIC
         onDispose { if (previous != null) activity.volumeControlStream = previous }
-    }
-    LaunchedEffect(isFullscreen) {
-        if (window != null) {
-            if (isFullscreen) {
-                WindowCompat.setDecorFitsSystemWindows(window, false)
-                WindowInsetsControllerCompat(window, window.decorView).let { controller ->
-                    controller.hide(WindowInsetsCompat.Type.systemBars())
-                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                }
-            } else {
-                WindowCompat.setDecorFitsSystemWindows(window, true)
-                WindowInsetsControllerCompat(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
-            }
-        }
     }
 
     val keepScreenOnPref = remember {
@@ -242,17 +221,13 @@ fun PlayerHost(
     }
 
     // The ONE video surface, shared across every layout. movableContentOf preserves its ExoPlayer
-    // (and "first frame seen" state) when it is moved between full / mini / fullscreen, so the
-    // transitions are gapless and never re-tune static. `minimized` is passed in (not captured) so
-    // the controller chrome can be hidden in the mini bar.
+    // (and "first frame seen" state) when it is moved between layouts, so transitions are gapless
+    // and never re-tune static.
     val videoSurface = remember {
-        movableContentOf<Boolean> { minimized ->
+        movableContentOf {
             PlayerFrame(
                 state = state,
                 viewModel = viewModel,
-                isFullscreen = isFullscreen,
-                minimized = minimized,
-                onToggleFullscreen = { isFullscreen = !isFullscreen },
             )
         }
     }
@@ -262,23 +237,7 @@ fun PlayerHost(
             inPip -> {
                 // Floating PiP window: just the video, no chrome.
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                    videoSurface(false)
-                }
-            }
-
-            isFullscreen -> {
-                Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                    videoSurface(false)
-                    IconButton(
-                        onClick = { isFullscreen = false },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(12.dp)
-                            .size(44.dp)
-                            .background(Color.Black.copy(alpha = 0.6f), CircleShape),
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = "Exit fullscreen", tint = Color.White)
-                    }
+                    videoSurface()
                 }
             }
 
@@ -288,7 +247,7 @@ fun PlayerHost(
                     viewModel = viewModel,
                     isRadio = isRadio,
                     onBack = onCollapse,
-                    video = { videoSurface(false) },
+                    video = { videoSurface() },
                 )
             }
 
@@ -298,7 +257,7 @@ fun PlayerHost(
                     bottomInset = bottomInset,
                     onExpand = onExpand,
                     onClose = onClose,
-                    video = { videoSurface(true) },
+                    video = { videoSurface() },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
@@ -767,9 +726,6 @@ private fun SourceChip(
 private fun PlayerFrame(
     state: PlayerUiState,
     viewModel: PlayerViewModel,
-    isFullscreen: Boolean,
-    onToggleFullscreen: () -> Unit,
-    minimized: Boolean = false,
 ) {
     val context = LocalContext.current
     val prebuiltPlayer by viewModel.takenPlayer.collectAsState()
@@ -824,9 +780,6 @@ private fun PlayerFrame(
                                 drmKeyId = state.drmKeyId,
                                 drmKey = state.drmKey,
                                 drmLicenseUrl = state.drmLicenseUrl,
-                                isFullscreen = isFullscreen,
-                                onToggleFullscreen = onToggleFullscreen,
-                                controlsEnabled = !minimized,
                                 playWhenReady = state.playWhenReady,
                                 onError = { msg -> viewModel.onPlayerError(msg) },
                                 onPlayingChanged = { viewModel.onPlaybackStateChanged(it) },
@@ -1293,9 +1246,6 @@ private fun ExoPlayerPlayer(
     drmKeyId: String? = null,
     drmKey: String? = null,
     drmLicenseUrl: String? = null,
-    isFullscreen: Boolean,
-    onToggleFullscreen: () -> Unit,
-    controlsEnabled: Boolean = true,
     playWhenReady: Boolean = true,
     onError: (String) -> Unit,
     onPlayingChanged: ((Boolean) -> Unit)? = null,
@@ -1444,7 +1394,7 @@ private fun ExoPlayerPlayer(
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
-                    useController = controlsEnabled
+                    useController = false
                     resizeMode = resizeModeInt
                     player = activePlayer
                     layoutParams = ViewGroup.LayoutParams(
@@ -1456,29 +1406,12 @@ private fun ExoPlayerPlayer(
             },
             update = { view ->
                 view.resizeMode = resizeModeInt
-                view.useController = controlsEnabled
-                if (!controlsEnabled) view.hideController()
+                view.useController = false
+                view.hideController()
                 if (view.player !== activePlayer) view.player = activePlayer
             },
             modifier = Modifier.fillMaxSize().alpha(surfaceAlpha),
         )
-
-        if (!isFullscreen && controlsEnabled) {
-            IconButton(
-                onClick = onToggleFullscreen,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
-                    .size(40.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), CircleShape),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Fullscreen,
-                    contentDescription = "Enter fullscreen",
-                    tint = Color.White,
-                )
-            }
-        }
     }
 }
 

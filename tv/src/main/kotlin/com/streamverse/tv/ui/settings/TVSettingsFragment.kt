@@ -12,6 +12,7 @@ import com.streamverse.core.data.PlaybackPreferences
 import com.streamverse.core.data.SmartCacheManager
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.data.SourceProvider
+import com.streamverse.core.data.source.provider.ProviderGroup
 import com.streamverse.core.data.repository.ChannelRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -40,24 +41,30 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
         // ── Data Sources section header ──────────────────────────────────────────────
         actions.add(sectionHeader(ID_SOURCES_HEADER, "Data Sources"))
 
-        SourceProvider.entries.forEachIndexed { i, provider ->
-            val enabled = sourcePreferences.isEnabled(provider)
-            val count = countChannelsFor(provider)
-            val countLabel = formatChannelCount(count)
-            val desc = buildString {
-                append(provider.description)
-                if (!enabled) append(" (disabled)")
-                else append(" — $countLabel channels")
+        var sourceIdx = 0
+        val grouped = SourceProvider.entries.groupBy { it.group }
+        for ((group, providers) in grouped) {
+            actions.add(sectionHeader(ID_SOURCE_SUB_BASE + group.ordinal, group.displayName))
+            for (provider in providers) {
+                val enabled = sourcePreferences.isEnabled(provider)
+                val count = countChannelsFor(provider)
+                val countLabel = formatChannelCount(count)
+                val desc = buildString {
+                    append(provider.description)
+                    if (!enabled) append(" (disabled)")
+                    else append(" — $countLabel channels")
+                }
+                actions.add(
+                    GuidedAction.Builder(requireContext())
+                        .id(ID_SOURCE_BASE + sourceIdx)
+                        .title(provider.displayName)
+                        .description(desc)
+                        .checkSetId(GuidedAction.CHECKBOX_CHECK_SET_ID)
+                        .checked(enabled)
+                        .build()
+                )
+                sourceIdx++
             }
-            actions.add(
-                GuidedAction.Builder(requireContext())
-                    .id(ID_SOURCE_BASE + i)
-                    .title(provider.displayName)
-                    .description(desc)
-                    .checkSetId(GuidedAction.CHECKBOX_CHECK_SET_ID)
-                    .checked(enabled)
-                    .build()
-            )
         }
 
         // ── Cache management section ────────────────────────────────────────────────
@@ -203,9 +210,16 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
         when {
             // Source provider toggle
             action.id in ID_SOURCE_BASE until ID_SOURCE_BASE + SourceProvider.entries.size -> {
-                val provider = SourceProvider.entries[(action.id - ID_SOURCE_BASE).toInt()]
-                sourcePreferences.setEnabled(provider, action.isChecked)
-                rebuildActions()
+                val flatIdx = (action.id - ID_SOURCE_BASE).toInt()
+                val provider = SourceProvider.entries
+                    .groupBy { it.group }
+                    .values
+                    .flatten()
+                    .getOrNull(flatIdx)
+                if (provider != null) {
+                    sourcePreferences.setEnabled(provider, action.isChecked)
+                    rebuildActions()
+                }
             }
 
             // Cache tier clear
@@ -291,7 +305,8 @@ class TVSettingsFragment : GuidedStepSupportFragment() {
 
     companion object {
         private const val ID_SOURCES_HEADER = 1L
-        private const val ID_SOURCE_BASE    = 100L    // 100–108 (9 providers)
+        private const val ID_SOURCE_SUB_BASE = 50L    // 50–52 (Alpha, Beta, Gamma sub-headers)
+        private const val ID_SOURCE_BASE    = 100L    // 100–106 (7 providers)
         private const val ID_CACHE_HEADER   = 150L
         private const val ID_CACHE_BASE     = 151L   // 151–153 (3 tiers)
         private const val ID_CACHE_CLEAR_ALL = 154L

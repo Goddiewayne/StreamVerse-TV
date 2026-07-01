@@ -4,20 +4,49 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamverse.core.data.CacheStats
 import com.streamverse.core.data.CacheTier
+import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.PlaybackPreferences
 import com.streamverse.core.data.SmartCacheManager
+import com.streamverse.core.data.SourceHealth
+import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.data.VideoResizeMode
 import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.repository.ChannelRepository
+import com.streamverse.core.data.repository.ProviderLoadingPhase
+import com.streamverse.core.data.source.LifecycleState
+import com.streamverse.core.data.source.SourceRegistry
+import com.streamverse.core.domain.model.SourceType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+data class ProviderHealthSummary(
+    val totalChannels: Int = 0,
+    val healthyChannels: Int = 0,
+    val unhealthyChannels: Int = 0,
+    val lifecycle: LifecycleState = LifecycleState.UNREGISTERED,
+    val reliabilityPercent: Int = 0,
+    val avgResponseTimeMs: Long = -1,
+    val consecutiveFailures: Int = 0,
+    val isEnabled: Boolean = true,
+) {
+    val overallState: SourceHealthState get() = when {
+        !isEnabled -> SourceHealthState.UNKNOWN
+        lifecycle != LifecycleState.ACTIVE && lifecycle != LifecycleState.REGISTERED -> SourceHealthState.UNAVAILABLE
+        totalChannels == 0 -> SourceHealthState.UNKNOWN
+        unhealthyChannels == totalChannels -> SourceHealthState.UNAVAILABLE
+        healthyChannels == totalChannels -> SourceHealthState.AVAILABLE
+        else -> SourceHealthState.VERIFYING
+    }
+    val isHealthy: Boolean get() = lifecycle == LifecycleState.ACTIVE && overallState != SourceHealthState.UNAVAILABLE
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -25,6 +54,8 @@ class SettingsViewModel @Inject constructor(
     private val playbackPreferences: PlaybackPreferences,
     private val repository: ChannelRepository,
     private val smartCacheManager: SmartCacheManager,
+    private val healthEngine: ChannelHealthEngine,
+    private val sourceRegistry: SourceRegistry,
 ) : ViewModel() {
 
     private val _enabledSources = MutableStateFlow(sourcePreferences.enabled())
@@ -33,9 +64,25 @@ class SettingsViewModel @Inject constructor(
     private val _sourceChannelCounts = MutableStateFlow(computeSourceChannelCounts())
     val sourceChannelCounts: StateFlow<Map<SourceProvider, Int>> = _sourceChannelCounts.asStateFlow()
 
+    private val _providerHealthSummaries = MutableStateFlow(emptyMap<SourceProvider, ProviderHealthSummary>())
+    val providerHealthSummaries: StateFlow<Map<SourceProvider, ProviderHealthSummary>> = _providerHealthSummaries.asStateFlow()
+
+    val providerLoadingProgress: StateFlow<Map<SourceProvider, ProviderLoadingPhase>> = repository.providerProgress
+
     init {
         viewModelScope.launch {
             repository.channels.collect { _sourceChannelCounts.value = computeSourceChannelCounts() }
+        }
+        viewModelScope.launch {
+            combine(
+                repository.channels,
+                healthEngine.sourceHealthUpdates,
+                sourceRegistry.allStates,
+            ) { channels, health, states ->
+                computeProviderHealthSummaries(channels, health, states)
+            }.collect { summaries ->
+                _providerHealthSummaries.value = summaries
+            }
         }
     }
 
@@ -135,6 +182,46 @@ class SettingsViewModel @Inject constructor(
             }
         }
         return counts
+    }
+
+    private fun computeProviderHealthSummaries(
+        channels: List<com.streamverse.core.domain.model.Channel>,
+        perChannelHealth: Map<String, Map<SourceType, SourceHealth>>,
+        providerStates: Map<String, com.streamverse.core.data.source.ProviderState>,
+    ): Map<SourceProvider, ProviderHealthSummary> {
+        val providerChannels = mutableMapOf<SourceProvider, MutableList<SourceHealth?>>()
+        for (channel in channels) {
+            for ((sourceType, _) in channel.sources) {
+                val provider = SourceProvider.forType(sourceType)
+                val health = perChannelHealth[channel.id]?.get(sourceType)
+                providerChannels.getOrPut(provider) { mutableListOf() }.add(health)
+            }
+        }
+        val enabled = _enabledSources.value
+        return SourceProvider.entries.associateWith { provider ->
+            val healths = providerChannels[provider] ?: emptyList()
+            val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
+            val state = adapters.firstOrNull()?.let { providerStates[it.providerId] }
+            val lifecycle = state?.lifecycle ?: LifecycleState.UNREGISTERED
+            val h = state?.health
+            val reliability = if (h != null && h.totalRequests > 0) {
+                (h.successfulRequests * 100 / h.totalRequests).toInt()
+            } else 0
+            val respTime = h?.responseTimeMs ?: -1
+            val isEnabled = enabled[provider] ?: true
+            val failures = h?.consecutiveFailures ?: 0
+            if (healths.isEmpty()) ProviderHealthSummary(
+                lifecycle = lifecycle, reliabilityPercent = reliability,
+                avgResponseTimeMs = respTime, consecutiveFailures = failures, isEnabled = isEnabled,
+            )
+            else ProviderHealthSummary(
+                totalChannels = healths.size,
+                healthyChannels = healths.count { it?.state == SourceHealthState.AVAILABLE },
+                unhealthyChannels = healths.count { it?.state == SourceHealthState.UNAVAILABLE },
+                lifecycle = lifecycle, reliabilityPercent = reliability,
+                avgResponseTimeMs = respTime, consecutiveFailures = failures, isEnabled = isEnabled,
+            )
+        }
     }
 
     companion object {

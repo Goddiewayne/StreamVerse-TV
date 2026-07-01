@@ -81,7 +81,7 @@ class SourceSelector @Inject constructor(
             return SourceSelection(type, SourceConfidence.FALLBACK)
         }
 
-        return SourceSelection(SourceType.VERIFIED, SourceConfidence.FALLBACK)
+        return SourceSelection(SourceType.BROADCASTER, SourceConfidence.FALLBACK)
     }
 
     /**

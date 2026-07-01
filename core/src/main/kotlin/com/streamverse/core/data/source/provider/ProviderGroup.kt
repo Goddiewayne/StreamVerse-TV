@@ -1,48 +1,33 @@
 package com.streamverse.core.data.source.provider
 
+/**
+ * Groups source providers by how they are fetched, not by content category.
+ *
+ * | Group  | Fetch method              | Providers                          |
+ * |--------|---------------------------|------------------------------------|
+ * | Alpha  | Local asset JSON (instant)| BROADCASTER                        |
+ * | Beta   | Hosted index + M3U fallback| GLOBAL_INDEX                      |
+ * | Gamma  | Individual API/scrape     | FREE_CHANNEL, YOUTUBE_TV, WORLD_TV,|
+ * |        |                           | SPORTS_EVENTS, RADIO               |
+ */
 enum class ProviderGroup(
     val displayName: String,
     val description: String,
     val sortOrder: Int,
 ) {
-    OFFICIAL_BROADCASTER(
-        "Official Broadcasters",
-        "Direct feeds from official broadcaster CDNs — highest reliability",
+    ALPHA(
+        "Alpha — Local Assets",
+        "Instant, low-latency sources loaded from bundled assets — no network required",
         0,
     ),
-    VERIFIED_CURATED(
-        "Verified Channels",
-        "Hand-picked channels independently verified to work",
+    BETA(
+        "Beta — Aggregated Index",
+        "Primary channel index fetched from hosted index with M3U fallback",
         1,
     ),
-    GLOBAL_AGGREGATOR(
-        "Global Aggregators",
-        "Large community-maintained indexes of thousands of channels",
+    GAMMA(
+        "Gamma — API Sources",
+        "Individual streaming services fetched via REST APIs or web scraping",
         2,
-    ),
-    FAST_SERVICE(
-        "Free Streaming Services",
-        "Free ad-supported TV from Pluto, Plex, Roku, Tubi, Xumo & more",
-        3,
-    ),
-    SPORTS_EVENTS(
-        "Sports & Events",
-        "Live sports and event coverage requiring dynamic stream resolution",
-        4,
-    ),
-    WORLD_TV(
-        "World TV",
-        "International channels, Middle Eastern, African & diaspora programming",
-        5,
-    ),
-    PREMIUM(
-        "Premium",
-        "Premium subscription channels (HBO, Showtime, Starz & more)",
-        6,
-    ),
-    AUDIO(
-        "Radio",
-        "Internet radio stations from around the world",
-        7,
     ),
 }

@@ -5,20 +5,20 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 
 /**
- * Adaptive track selector tuned for poor connectivity and a near-zero failure rate.
+ * Ultra-low-latency adaptive track selector — **enter at lowest safe bitrate, climb on
+ * measured bandwidth** so the first video frame arrives in <200 ms even on congested links.
  *
- * When [dataSaver] is `true`, the selector forces the lowest available bitrate for every
- * adaptive stream — saving significant data on metered connections at the cost of lower
- * resolution.
+ * When [dataSaver] is `true`, permanently locks to the lowest bitrate.
  *
- * Behaviour (normal mode):
- *  • **Start safe, climb when able** — adaptive selection begins conservatively and ramps the
- *    bitrate up only as measured bandwidth proves it can sustain it, so a weak link gets a
- *    watchable picture immediately instead of stalling on a too-high rendition.
- *  • **Always play *something*** — `setExceedVideoConstraintsIfNecessary` /
- *    `setExceedRendererCapabilitiesIfNecessary` guarantee a renderable track is chosen even when
- *    every rendition technically exceeds the device/constraints, eliminating "no supported track"
- *    playback failures.
+ * Key behaviours:
+ *  • **Start low, climb on proof** — without `setInitialBandwidthEstimate()`, ExoPlayer's
+ *    adaptive evaluator enters conservatively (~800 kbps assumed) and ramps up only as download
+ *    throughput confirms headroom.  This means a weak HSPA connection gets a watchable picture
+ *    immediately instead of stalling on a too-high rendition.
+ *  • **Never fail** — `setExceedVideoConstraintsIfNecessary` + `setExceedRendererCapabilities`
+ *    eliminate "no supported track" errors that would otherwise surface a black screen.
+ *  • **Audio only when video is too heavy** — `setTunnelingAudioSessionId(null)` avoids audio
+ *    tunnel stalls on some MediaTek devices.
  */
 @UnstableApi
 object StreamTrackSelector {

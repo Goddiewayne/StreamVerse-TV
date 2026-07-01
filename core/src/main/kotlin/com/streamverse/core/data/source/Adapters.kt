@@ -6,16 +6,10 @@ import com.streamverse.core.data.model.RadioStation
 import com.streamverse.core.data.model.StmifyChannel
 import com.streamverse.core.data.remote.broadcaster.BroadcasterClient
 import com.streamverse.core.data.remote.dlhd.DlhdClient
-import com.streamverse.core.data.remote.fast.FastChannel
-import com.streamverse.core.data.remote.fast.FastTvClient
 import com.streamverse.core.data.remote.free.FreeChannel
 import com.streamverse.core.data.remote.free.FreeLiveClient
-import com.streamverse.core.data.remote.independent.IndependentClient
-import com.streamverse.core.data.remote.iptv.FreeTvClient
+import com.streamverse.core.data.remote.hosted.HostedIndexClient
 import com.streamverse.core.data.remote.iptv.IptvChannel
-import com.streamverse.core.data.remote.iptv.IptvClient
-import com.streamverse.core.data.remote.premium.PremiumChannel
-import com.streamverse.core.data.remote.premium.PremiumClient
 import com.streamverse.core.data.remote.radio.RadioBrowserClient
 import com.streamverse.core.data.remote.stmify.PrimeVideoClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
@@ -29,71 +23,36 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-class IptvProviderAdapter @Inject constructor(
-    private val iptvClient: IptvClient,
+class GlobalIndexProviderAdapter @Inject constructor(
+    private val hostedIndexClient: HostedIndexClient,
     private val dispatchers: StreamVerseDispatchers,
 ) : ProviderAdapter {
-    override val providerId = "iptv_org"
-    override val displayName = "Global Channels (IPTV)"
-    override val sourceProvider = SourceProvider.IPTV
-    override val primarySourceType = SourceType.IPTV
+    override val providerId = "global_index"
+    override val displayName = "Global Channels"
+    override val sourceProvider = SourceProvider.GLOBAL_INDEX
+    override val primarySourceType = SourceType.GLOBAL_INDEX
     override val capabilities = setOf(ProviderCapability.CHANNEL_DISCOVERY)
 
     private val _state = MutableStateFlow(ProviderState(providerId = providerId, lifecycle = LifecycleState.REGISTERED))
     override val state: StateFlow<ProviderState> = _state.asStateFlow()
 
     override suspend fun discoverChannels(): List<SourceChannelDTO> = withContext(dispatchers.io) {
-        iptvClient.fetchChannels().getOrDefault(emptyList()).map { it.toDTO(providerId) }
-    }
-
-    override suspend fun refreshMetadata(channelRefIds: List<String>): Map<String, SourceChannelDTO> = emptyMap()
-    override suspend fun refreshStreams(channelRefIds: List<String>): Map<String, String?> = emptyMap()
-    override suspend fun validateStream(referenceId: String): StreamValidation = StreamValidation(referenceId, false)
-    override suspend fun healthCheck(): ProviderHealth = ProviderHealth(isHealthy = true)
-    override suspend fun initialize() { _state.value = _state.value.copy(lifecycle = LifecycleState.ACTIVE) }
-    override suspend fun shutdown() { _state.value = _state.value.copy(lifecycle = LifecycleState.SHUTDOWN) }
-}
-
-class FreeTvProviderAdapter @Inject constructor(
-    private val freeTvClient: FreeTvClient,
-    private val dispatchers: StreamVerseDispatchers,
-) : ProviderAdapter {
-    override val providerId = "free_tv"
-    override val displayName = "Free-to-Air TV"
-    override val sourceProvider = SourceProvider.FREE_TV
-    override val primarySourceType = SourceType.FREE_TV
-    override val capabilities = setOf(ProviderCapability.CHANNEL_DISCOVERY)
-
-    private val _state = MutableStateFlow(ProviderState(providerId = providerId, lifecycle = LifecycleState.REGISTERED))
-    override val state: StateFlow<ProviderState> = _state.asStateFlow()
-
-    override suspend fun discoverChannels(): List<SourceChannelDTO> = withContext(dispatchers.io) {
-        freeTvClient.fetchChannels().getOrDefault(emptyList()).map { it.toDTO(providerId) }
-    }
-
-    override suspend fun refreshMetadata(channelRefIds: List<String>): Map<String, SourceChannelDTO> = emptyMap()
-    override suspend fun refreshStreams(channelRefIds: List<String>): Map<String, String?> = emptyMap()
-    override suspend fun validateStream(referenceId: String): StreamValidation = StreamValidation(referenceId, false)
-    override suspend fun healthCheck(): ProviderHealth = ProviderHealth(isHealthy = true)
-    override suspend fun initialize() { _state.value = _state.value.copy(lifecycle = LifecycleState.ACTIVE) }
-    override suspend fun shutdown() { _state.value = _state.value.copy(lifecycle = LifecycleState.SHUTDOWN) }
-}
-
-class FastTvProviderAdapter @Inject constructor(
-    private val fastTvClient: FastTvClient,
-    private val dispatchers: StreamVerseDispatchers,
-) : ProviderAdapter {
-    override val providerId = "fast_tv"
-    override val displayName = "Regional Live TV"
-    override val sourceProvider = SourceProvider.FAST_TV
-    override val primarySourceType = SourceType.FAST_TV
-    override val capabilities = setOf(ProviderCapability.CHANNEL_DISCOVERY)
-
-    private val _state = MutableStateFlow(ProviderState(providerId = providerId, lifecycle = LifecycleState.REGISTERED))
-    override val state: StateFlow<ProviderState> = _state.asStateFlow()
-
-    override suspend fun discoverChannels(): List<SourceChannelDTO> = withContext(dispatchers.io) {
-        fastTvClient.fetchChannels().getOrDefault(emptyList()).map { it.toDTO(providerId) }
+        hostedIndexClient.fetchAll().map { ch ->
+            SourceChannelDTO(
+                providerId = providerId,
+                referenceId = ch.id,
+                name = ch.name,
+                streamUrl = ch.streamUrl,
+                logoUrl = ch.logoUrl,
+                category = ch.category,
+                country = ch.country,
+                language = ch.language,
+                quality = ch.quality,
+                headers = ch.headers ?: emptyMap(),
+                drmKeyId = ch.drmKeyId,
+                drmKey = ch.drmKey,
+            )
+        }
     }
 
     override suspend fun refreshMetadata(channelRefIds: List<String>): Map<String, SourceChannelDTO> = emptyMap()
@@ -183,54 +142,7 @@ class RadioProviderAdapter @Inject constructor(
     override suspend fun shutdown() { _state.value = _state.value.copy(lifecycle = LifecycleState.SHUTDOWN) }
 }
 
-class PremiumProviderAdapter @Inject constructor(
-    private val premiumClient: PremiumClient,
-    private val dispatchers: StreamVerseDispatchers,
-) : ProviderAdapter {
-    override val providerId = "premium"
-    override val displayName = "Premium TV"
-    override val sourceProvider = SourceProvider.PREMIUM
-    override val primarySourceType = SourceType.PREMIUM
-    override val capabilities = setOf(ProviderCapability.CHANNEL_DISCOVERY)
 
-    private val _state = MutableStateFlow(ProviderState(providerId = providerId, lifecycle = LifecycleState.REGISTERED))
-    override val state: StateFlow<ProviderState> = _state.asStateFlow()
-
-    override suspend fun discoverChannels(): List<SourceChannelDTO> = withContext(dispatchers.io) {
-        premiumClient.fetchChannels().getOrDefault(emptyList()).map { it.toDTO(providerId) }
-    }
-
-    override suspend fun refreshMetadata(channelRefIds: List<String>): Map<String, SourceChannelDTO> = emptyMap()
-    override suspend fun refreshStreams(channelRefIds: List<String>): Map<String, String?> = emptyMap()
-    override suspend fun validateStream(referenceId: String): StreamValidation = StreamValidation(referenceId, false)
-    override suspend fun healthCheck(): ProviderHealth = ProviderHealth(isHealthy = true)
-    override suspend fun initialize() { _state.value = _state.value.copy(lifecycle = LifecycleState.ACTIVE) }
-    override suspend fun shutdown() { _state.value = _state.value.copy(lifecycle = LifecycleState.SHUTDOWN) }
-}
-
-class IndependentProviderAdapter @Inject constructor(
-    private val independentClient: IndependentClient,
-) : ProviderAdapter {
-    override val providerId = "verified"
-    override val displayName = "Verified Channels"
-    override val sourceProvider = SourceProvider.VERIFIED
-    override val primarySourceType = SourceType.VERIFIED
-    override val capabilities = setOf(ProviderCapability.CHANNEL_DISCOVERY)
-
-    private val _state = MutableStateFlow(ProviderState(providerId = providerId, lifecycle = LifecycleState.REGISTERED))
-    override val state: StateFlow<ProviderState> = _state.asStateFlow()
-
-    override suspend fun discoverChannels(): List<SourceChannelDTO> {
-        return independentClient.fetchChannels().map { it.toDTO(providerId) }
-    }
-
-    override suspend fun refreshMetadata(channelRefIds: List<String>): Map<String, SourceChannelDTO> = emptyMap()
-    override suspend fun refreshStreams(channelRefIds: List<String>): Map<String, String?> = emptyMap()
-    override suspend fun validateStream(referenceId: String): StreamValidation = StreamValidation(referenceId, false)
-    override suspend fun healthCheck(): ProviderHealth = ProviderHealth(isHealthy = true)
-    override suspend fun initialize() { _state.value = _state.value.copy(lifecycle = LifecycleState.ACTIVE) }
-    override suspend fun shutdown() { _state.value = _state.value.copy(lifecycle = LifecycleState.SHUTDOWN) }
-}
 
 class BroadcasterProviderAdapter @Inject constructor(
     private val broadcasterClient: BroadcasterClient,
@@ -322,33 +234,7 @@ private fun IptvChannel.toDTO(providerId: String) = SourceChannelDTO(
     drmKey = drmKey,
 )
 
-private fun FastChannel.toDTO(providerId: String) = SourceChannelDTO(
-    providerId = providerId,
-    referenceId = id,
-    name = name,
-    streamUrl = streamUrl,
-    logoUrl = logoUrl,
-    category = category,
-    country = country,
-    headers = headers,
-    drmKeyId = drmKeyId,
-    drmKey = drmKey,
-)
-
 private fun FreeChannel.toDTO(providerId: String) = SourceChannelDTO(
-    providerId = providerId,
-    referenceId = id,
-    name = name,
-    streamUrl = streamUrl,
-    logoUrl = logoUrl,
-    category = category,
-    country = country,
-    headers = headers,
-    drmKeyId = drmKeyId,
-    drmKey = drmKey,
-)
-
-private fun PremiumChannel.toDTO(providerId: String) = SourceChannelDTO(
     providerId = providerId,
     referenceId = id,
     name = name,

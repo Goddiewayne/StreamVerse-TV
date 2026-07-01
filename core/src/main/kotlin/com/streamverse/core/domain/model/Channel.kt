@@ -18,48 +18,34 @@ data class Channel(
 
 enum class Quality { SD, HD, FHD, _4K }
 
+/**
+ * Identifies the origin of a channel stream.
+ *
+ * Providers are grouped by fetch method:
+ * - **Alpha** (tier 0): Local asset JSON — BROADCASTER (instant, no network)
+ * - **Beta**  (tier 1): Aggregated index — GLOBAL_INDEX
+ * - **Gamma** (tier 2): Individual API/scrape — the remaining 5 types
+ */
 enum class SourceType {
-    // ── Canonical names ────────────────────────────────────────────────────
-    IPTV,
-    FREE_TV,
-    RADIO,
-    FAST_TV,
-    PREMIUM,
+    /** Merged global channel index from M3U aggregators (iptv-org, Free-TV, community). */
+    GLOBAL_INDEX,
+    /** Direct FTA satellite and broadcaster CDN feeds from official sources. */
     BROADCASTER,
+    /** Pluto TV, Plex, Roku, Tubi, Xumo & Distro TV direct CDN playlists. */
     FREE_CHANNEL,
-
-    /** Hand-picked channels from independent CDNs, verified to work. */
-    VERIFIED,
     /** Live sports, news & entertainment channels requiring stream resolution. */
     SPORTS_EVENTS,
     /** Middle Eastern, African & international channels with search support. */
     WORLD_TV,
-
     /** YouTube channels broadcasting live TV, resolved via NewPipeExtractor. */
     YOUTUBE_TV,
-
-    // ── Deprecated aliases (kept for cache/backward compatibility) ────────
-    /** @deprecated Use [VERIFIED] */
-    INDEPENDENT,
-    /** @deprecated Use [SPORTS_EVENTS] */
-    DLHD,
-    /** @deprecated Use [WORLD_TV] */
-    STMIFY_FREE,
-    /** @deprecated Use [WORLD_TV] */
-    STMIFY_PREMIUM,
+    /** Live internet radio stations. */
+    RADIO,
     ;
 
     companion object {
-        /** Maps every deprecated value to its canonical replacement. */
-        val canonical: Map<SourceType, SourceType> = mapOf(
-            INDEPENDENT to VERIFIED,
-            DLHD to SPORTS_EVENTS,
-            STMIFY_FREE to WORLD_TV,
-            STMIFY_PREMIUM to WORLD_TV,
-        )
-
-        /** Resolve to canonical type — identity for non-deprecated values. */
-        fun canonicalOf(type: SourceType): SourceType = canonical[type] ?: type
+        /** Identity — preserved for backward compatibility. */
+        fun canonicalOf(type: SourceType): SourceType = type
     }
 }
 

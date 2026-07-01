@@ -402,7 +402,7 @@ private data class SourceItem(
 
 // ── Main ───────────────────────────────────────────────────────────────────
 
-fun main() {
+fun main(args: Array<String>) {
     val gson = Gson()
     val client = OkHttpClient.Builder()
         .readTimeout(30, TimeUnit.SECONDS)
@@ -410,7 +410,7 @@ fun main() {
         .build()
 
     val baseUrl = System.getenv("DATA_BASE_URL") ?: "https://Goddiewayne.github.io/streamverse-data"
-    val outDir = System.getenv("OUTPUT_DIR") ?: "."
+    val outDir = args.getOrElse(0) { System.getenv("OUTPUT_DIR") ?: "." }
 
     println("Merging channels from $baseUrl ...")
 

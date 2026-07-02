@@ -66,7 +66,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.streamverse.app.ui.player.LocalMiniPlayerInset
 import com.streamverse.core.data.CacheTier
-import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.VideoResizeMode
 
 private val IosGreen = Color(0xFF34C759)
@@ -399,13 +398,6 @@ private fun ChannelsAndSourcesSection(state: SettingsUiState, viewModel: Setting
         onToggle = { viewModel.toggleSection(SettingsSection.CHANNELS_AND_SOURCES) },
         accentColor = com.streamverse.app.ui.theme.ElectricViolet,
     ) {
-        state.sourceProviders.forEachIndexed { idx, provider ->
-            if (idx > 0) InsetDivider()
-            SourceProviderRow(provider = provider, onToggle = { enabled ->
-                viewModel.toggleSourceProvider(provider.provider, enabled)
-            })
-        }
-        InsetDivider()
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -599,53 +591,6 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheck
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = IosGreen,
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color(0xFF39393D),
-            ),
-        )
-    }
-}
-
-@Composable
-private fun SourceProviderRow(provider: SourceProviderInfo, onToggle: (Boolean) -> Unit) {
-    val dotColor = when {
-        !provider.isEnabled -> Color(0xFF3A3A3C)
-        provider.isOnline -> IosGreen
-        else -> Color(0xFFFF453A)
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onToggle(!provider.isEnabled) }
-            .padding(horizontal = 16.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(dotColor),
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = provider.displayName,
-                style = MaterialTheme.typography.bodyLarge,
-                color = if (provider.isEnabled) Color.White else IosGray,
-            )
-            Text(
-                text = "${provider.channelCount} channels",
-                style = MaterialTheme.typography.bodySmall,
-                color = IosGray,
-            )
-        }
-        Spacer(modifier = Modifier.width(8.dp))
-        Switch(
-            checked = provider.isEnabled,
-            onCheckedChange = onToggle,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,
                 checkedTrackColor = IosGreen,

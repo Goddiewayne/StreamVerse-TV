@@ -256,16 +256,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // Source management
-    fun toggleSourceProvider(provider: SourceProvider, enabled: Boolean) {
-        sourcePreferences.setEnabled(provider, enabled)
-        val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
-        for (adapter in adapters) {
-            if (enabled) sourceRegistry.enable(adapter.providerId)
-            else sourceRegistry.disable(adapter.providerId)
-        }
-    }
-
     private fun markOperation(op: String) {
         val current = _state.value.activeOperations.toMutableSet()
         current.add(op)

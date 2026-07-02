@@ -273,6 +273,130 @@ class HomeSectionGenerator @Inject constructor(
         }
 
         // Category browsing — no regional TV row here, regional highlights are in Featured
-        return rankingEngine.rankSections(sections, ctx.period)
+        val deduped = deduplicateSections(sections, channels, ctx)
+        return rankingEngine.rankSections(deduped, ctx.period)
+    }
+
+    /**
+     * Removes duplicate channels across all sections so a channel won't appear in both
+     * "Trending Live" and "Popular Worldwide" and "Recommended For You" simultaneously.
+     *
+     * Strategy:
+     * - Exempt sections (Hero, Continue Watching, Live Events, Favourites) keep everything.
+     * - Priority sections (Trending, Editor's Picks) keep their top picks first.
+     * - Later sections filter out channels already seen in earlier sections.
+     * - Category sections backfill from their own category pool to stay diverse.
+     * - General sections backfill from the top-ranked fallback pool.
+     */
+    private fun deduplicateSections(
+        sections: List<HomeSection>,
+        allChannels: List<Channel>,
+        ctx: HomeRankingContext,
+    ): List<HomeSection> {
+        val usedIds = mutableSetOf<String>()
+
+        // Pre-compute ranked fallback pools per category for intelligent backfill
+        val rankedAll = allChannels.sortedByDescending {
+            channelRanking.rankChannel(it, ctx.baseContext)
+        }
+        val categoryPools = mapOf(
+            SectionType.TOP_NEWS to rankCategory(allChannels, CategoryNormalizer.C.NEWS, ctx),
+            SectionType.TOP_SPORTS to rankCategory(allChannels, CategoryNormalizer.C.SPORTS, ctx),
+            SectionType.TOP_ENTERTAINMENT to rankCategory(allChannels, CategoryNormalizer.C.ENTERTAINMENT, ctx),
+            SectionType.TOP_MOVIES to rankCategory(allChannels, CategoryNormalizer.C.MOVIES, ctx),
+            SectionType.TOP_DOCUMENTARIES to rankCategory(allChannels, CategoryNormalizer.C.DOCUMENTARY, ctx),
+            SectionType.KIDS to rankCategory(allChannels, CategoryNormalizer.C.KIDS, ctx),
+            SectionType.MUSIC to rankCategory(allChannels, CategoryNormalizer.C.MUSIC, ctx),
+        )
+
+        val exemptTypes = setOf(
+            SectionType.HERO_BANNER, SectionType.CONTINUE_WATCHING,
+            SectionType.LIVE_EVENTS, SectionType.FAVOURITES,
+        )
+
+        return sections.map { section ->
+            if (section.type in exemptTypes) {
+                registerIds(section, usedIds)
+                return@map section
+            }
+
+            when (section.type) {
+                SectionType.TRENDING -> processTrending(section, usedIds, rankedAll)
+                SectionType.TOP_NEWS, SectionType.TOP_SPORTS ->
+                    processProgrammes(section, usedIds, categoryPools[section.type] ?: rankedAll)
+                SectionType.RECENTLY_ADDED ->
+                    processChannels(section, usedIds, rankedAll, target = 6)
+                else ->
+                    processChannels(section, usedIds, categoryPools[section.type] ?: rankedAll, target = 4)
+            }
+        }
+    }
+
+    private fun rankCategory(
+        channels: List<Channel>,
+        category: String,
+        ctx: HomeRankingContext,
+    ): List<Channel> = channels
+        .filter { it.category == category }
+        .sortedByDescending { channelRanking.rankChannel(it, ctx.baseContext) }
+
+    /** Record all channel IDs in a section as used (no filtering). */
+    private fun registerIds(section: HomeSection, usedIds: MutableSet<String>) {
+        when {
+            section.trending.isNotEmpty() -> section.trending.forEach { usedIds.add(it.channel.id) }
+            section.programmes.isNotEmpty() -> section.programmes.forEach { usedIds.add(it.channel.id) }
+            section.events.isNotEmpty() -> section.events.forEach { e -> e.channelIds.forEach { usedIds.add(it) } }
+            else -> section.channels.forEach { usedIds.add(it.id) }
+        }
+    }
+
+    /** For sections that use the standard [channels] list. */
+    private fun processChannels(
+        section: HomeSection,
+        usedIds: MutableSet<String>,
+        backfillPool: List<Channel>,
+        target: Int,
+    ): HomeSection {
+        val keep = section.channels.filter { usedIds.add(it.id) }
+        val filled = if (keep.size < target && section.channels.size >= target) {
+            val needed = target - keep.size
+            keep + backfillPool.filter { usedIds.add(it.id) }.take(needed)
+        } else keep
+        return section.copy(channels = filled)
+    }
+
+    /** For sections that use the [programmes] list (TOP_NEWS, TOP_SPORTS). */
+    private fun processProgrammes(
+        section: HomeSection,
+        usedIds: MutableSet<String>,
+        backfillPool: List<Channel>,
+    ): HomeSection {
+        val keepProgs = section.programmes.filter { usedIds.add(it.channel.id) }
+        if (keepProgs.size < 4 && section.programmes.size >= 4) {
+            val needed = 4 - keepProgs.size
+            val fill = backfillPool.filter { usedIds.add(it.id) }.take(needed)
+            val fillProgs = fill.map { programmeRepo.getProgramme(it) }
+            return section.copy(programmes = keepProgs + fillProgs)
+        }
+        return section.copy(programmes = keepProgs)
+    }
+
+    /** For the TRENDING section. */
+    private fun processTrending(
+        section: HomeSection,
+        usedIds: MutableSet<String>,
+        backfillPool: List<Channel>,
+    ): HomeSection {
+        val keep = section.trending.filter { usedIds.add(it.channel.id) }
+        if (keep.size < 6 && section.trending.size >= 6) {
+            val needed = 6 - keep.size
+            val nextRank = (keep.maxOfOrNull { it.rank } ?: 0) + 1
+            val fill = backfillPool.filter { usedIds.add(it.id) }.take(needed)
+            val fillTrending = fill.mapIndexed { i, ch ->
+                TrendingChannel(ch, rank = nextRank + i, reason = "Popular", programme = null)
+            }
+            return section.copy(trending = keep + fillTrending)
+        }
+        return section.copy(trending = keep)
     }
 }

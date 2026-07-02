@@ -59,7 +59,7 @@ class IncrementalMergeState(
     fun mergeRadio(items: List<RadioStation>) = synchronized(this) {
         val radioByName = mutableMapOf<String, Channel>()
         for (r in items) {
-            val displayName = ChannelNameFormatter.stripResolution(r.name)
+            val displayName = ChannelNameFormatter.format(r.name)
             val canon = ChannelCanonicalizer.canonicalize(displayName, entityResolutionEngine.aliasDictionary)
             val existing = radioByName[canon.hashKey]
                 ?: entityResolutionEngine.findIdByHashKey(canon.hashKey)?.let { byId[it] }
@@ -122,7 +122,7 @@ class IncrementalMergeState(
                     synchronized(this) { byId[updated.id] = updated; updateIndexes(updated); localUpdated++ }
                 }
             } else {
-                val displayName = ChannelNameFormatter.stripResolution(item.name)
+                val displayName = ChannelNameFormatter.format(item.name)
                 val newCh = Channel(
                     id = "${sourceType.name.lowercase().substringBefore("_")}_${item.id}",
                     displayName = displayName,

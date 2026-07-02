@@ -42,7 +42,8 @@ class CanonicalEngine(
             val existing = matchExisting(raw, name, hk, byExactName, byHashKey, byTvgId, byRawId, byStreamUrl, byId)
             if (existing != null) {
                 if (name.length > 2 && existing.displayName.length <= 2) {
-                    existing.displayName = if (isChecksumLike(name)) raw.id.take(8).uppercase() else name
+                    val dn = if (isChecksumLike(name)) raw.id.take(8).uppercase() else name
+                    existing.displayName = NameNormalizer.formatDisplayName(dn)
                     val norm = name.trim().lowercase()
                     byExactName[norm] = existing.id
                     byHashKey.getOrPut(hk) { mutableSetOf() }.add(existing.id)
@@ -81,7 +82,8 @@ class CanonicalEngine(
                         "${key}${idx}"
                     }
                 } else name
-                val finalName = if (isChecksumLike(displayName)) raw.id.take(8).uppercase() else displayName
+                val rawName = if (isChecksumLike(displayName)) raw.id.take(8).uppercase() else displayName
+                val finalName = NameNormalizer.formatDisplayName(rawName)
                 val info = SourceInfo(
                     type = raw.source,
                     referenceId = raw.id,
@@ -230,7 +232,7 @@ class CanonicalEngine(
         "children" to "Kids", "music" to "Music", "documentary" to "Documentary",
         "docu" to "Documentary", "religious" to "Religious", "religion" to "Religious",
         "lifestyle" to "Lifestyle", "comedy" to "Comedy", "science" to "Science",
-        "entertainment" to "Entertainment", "business" to "Business",
+        "entertainment" to "Entertainment", "classic" to "Entertainment", "business" to "Business",
         "education" to "Education", "travel" to "Travel", "nature" to "Nature",
         "weather" to "Weather", "shopping" to "Shopping", "animation" to "Animation",
         "anime" to "Animation", "series" to "Entertainment", "drama" to "Entertainment",
@@ -239,10 +241,32 @@ class CanonicalEngine(
         "public" to "General",
     )
 
+    /** Strip non-alphanumeric characters (except space, &, /) for alias matching. */
+    private fun sanitizeForAlias(raw: String): String =
+        raw.lowercase().trim().replace(Regex("""[^a-z0-9 &/]"""), "").trim()
+
+    /** Split multi-category values (e.g. "Animation;Classic;Entertainment") and
+     *  return the first entry that matches [categoryAliases], or the first part
+     *  title-cased as a fallback. */
+    private val RE_CATEGORY_SPLIT = Regex("""\s*[;,|/]\s*""")
+
     private fun normalizeCategory(raw: String?): String? {
         if (raw == null || raw.isBlank()) return null
         val lower = raw.lowercase().trim()
-        return categoryAliases[lower] ?: raw.trim().replaceFirstChar { it.uppercaseChar() }
+        // Direct match first (fast path)
+        val direct = sanitizeForAlias(lower)
+        categoryAliases[direct]?.let { return it }
+        // Multi-category split: try each part until one matches an alias
+        val parts = lower.split(RE_CATEGORY_SPLIT).filter { it.isNotBlank() }
+        if (parts.size > 1) {
+            for (part in parts) {
+                val clean = sanitizeForAlias(part)
+                categoryAliases[clean]?.let { return it }
+            }
+        }
+        // Fallback: title-case the first part
+        val title = if (parts.isNotEmpty()) sanitizeForAlias(parts.first()) else sanitizeForAlias(lower)
+        return if (title.isNotBlank()) title.replaceFirstChar { it.uppercaseChar() } else null
     }
 
     private class MutableRawChannel(

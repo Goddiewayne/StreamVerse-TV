@@ -13,14 +13,14 @@ object CategoryTaxonomy {
     // ── Canonical categories ─────────────────────────────────────────────────
     const val NEWS          = "News"
     const val SPORTS        = "Sports"
-    const val MOVIES        = "Movies & Series"
-    const val KIDS          = "Kids & Family"
+    const val MOVIES        = "Movies"
+    const val KIDS          = "Kids"
     const val MUSIC         = "Music"
     const val DOCUMENTARY   = "Documentary"
     const val RELIGIOUS     = "Religious"
     const val LIFESTYLE     = "Lifestyle"
     const val COMEDY        = "Comedy"
-    const val SCIENCE       = "Science & Tech"
+    const val SCIENCE       = "Science"
     const val ENTERTAINMENT = "Entertainment"
     const val BUSINESS      = "Business"
     const val GENERAL       = "General"
@@ -93,7 +93,8 @@ object CategoryTaxonomy {
         "bollywood"          to MOVIES,
         "telenovelas"        to MOVIES,
         "novelas"            to MOVIES,
-        "entertainment"      to MOVIES,  // many providers bundle movies under "entertainment"
+        "entertainment"      to ENTERTAINMENT,
+        "classic"            to ENTERTAINMENT,
 
         // ── Kids & Family ──────────────────────────────────────────────────
         "kids"               to KIDS,

@@ -25,6 +25,7 @@ object ChannelNameFormatter {
         "ewtn" to "EWTN",
         "ifilm" to "iFilm",
         "itv" to "ITV",
+        "bein" to "beIN",
     )
 
     // Small words kept lowercase unless they open the name or follow an opening paren
@@ -113,12 +114,12 @@ object ChannelNameFormatter {
         if (upper in UPPER_TOKENS) return upper
         // Quality suffixes inside parens stay lowercase
         if (lower in QUALITY_TOKENS) return lower
-        // Pure digit / digit+letter like "2", "3AW" — keep as-is
+        // First word ≤4 letters → ALL CAPS (handles SABC, CNN, MBC, 16TV, 3ABN, etc.)
+        if (isFirst && token.length <= 4) return upper
+        // Pure digit / digit+letter like "2", "3AW" — keep as-is (non-first tokens)
         if (token.matches(Regex("[0-9]+[A-Za-z]*"))) return token
         // Small words lowercase (except at segment start)
         if (!isFirst && lower in LOWER_WORDS) return lower
-        // First word ≤4 letters → ALL CAPS (handles SABC, CNN, MBC, ABC, etc.)
-        if (isFirst && token.length <= 4) return upper
         // Default: Title-case
         return lower.replaceFirstChar { it.uppercaseChar() }
     }

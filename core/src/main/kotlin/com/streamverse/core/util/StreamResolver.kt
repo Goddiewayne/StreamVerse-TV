@@ -84,8 +84,8 @@ class StreamResolver @Inject constructor(
                 StreamInfo(it, requiresBrowser = it.contains("dlhd.pk/"))
             }
             SourceType.WORLD_TV -> {
-                // Pre-resolved stream URL from server-side merged.json
-                if (!sourceInfo.streamUrl.isNullOrBlank()) {
+                val isWebPage = sourceInfo.streamUrl?.contains("stmify.com/live-tv/") == true
+                if (!isWebPage && !sourceInfo.streamUrl.isNullOrBlank()) {
                     Result.success(
                         StreamInfo(
                             url = sourceInfo.streamUrl,
@@ -111,8 +111,8 @@ class StreamResolver @Inject constructor(
         val urls = mutableListOf<StreamInfo>()
         when (SourceType.canonicalOf(sourceInfo.type)) {
             SourceType.WORLD_TV -> {
-                // Pre-resolved stream URL from server-side merged.json
-                if (!sourceInfo.streamUrl.isNullOrBlank()) {
+                val isWebPage = sourceInfo.streamUrl?.contains("stmify.com/live-tv/") == true
+                if (!isWebPage && !sourceInfo.streamUrl.isNullOrBlank()) {
                     urls.add(
                         StreamInfo(
                             url = sourceInfo.streamUrl,

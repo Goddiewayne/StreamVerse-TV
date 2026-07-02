@@ -55,7 +55,7 @@ class SourceManagementViewModel @Inject constructor(
                 val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
                 val state = adapters.firstOrNull()?.let { states[it.providerId] }
                 val isEnabled = enabled[provider] ?: true
-                val isOnline = state?.lifecycle == com.streamverse.core.data.source.LifecycleState.ACTIVE
+                val isOnline = channelCount > 0 || state?.lifecycle == com.streamverse.core.data.source.LifecycleState.ACTIVE
                 val statusLabel = when {
                     !isEnabled -> "Disabled"
                     isOnline -> if (channelCount > 0) "Online · $channelCount channels" else "Online"

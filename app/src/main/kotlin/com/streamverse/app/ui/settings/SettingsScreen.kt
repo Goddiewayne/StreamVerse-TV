@@ -306,6 +306,49 @@ private fun ExpandableSectionCard(
     }
 }
 
+@Composable
+private fun StaticSectionCard(
+    title: String,
+    subtitle: String,
+    content: @Composable () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF1C1C1E)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IosGray,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            color = Color(0xFF2C2C2E),
+            thickness = 0.5.dp,
+        )
+        content()
+    }
+}
+
 // ── Playback Section ──────────────────────────────────────────────────
 
 @Composable
@@ -485,12 +528,9 @@ private fun AdvancedSection(state: SettingsUiState, viewModel: SettingsViewModel
 
 @Composable
 private fun DiagnosticsSection(state: SettingsUiState) {
-    ExpandableSectionCard(
+    StaticSectionCard(
         title = "Diagnostics",
         subtitle = "Catalogue ${state.diagnostics.catalogueVersion} · ${state.diagnostics.channelCount} channels",
-        isExpanded = state.expandedSections.contains(SettingsSection.DIAGNOSTICS),
-        onToggle = { /* read-only, no toggle needed but keep for consistency */ },
-        accentColor = IosGray,
     ) {
         StatRow("Catalogue Version", state.diagnostics.catalogueVersion)
         InsetDivider()
@@ -508,12 +548,9 @@ private fun DiagnosticsSection(state: SettingsUiState) {
 
 @Composable
 private fun AboutSection(version: String) {
-    ExpandableSectionCard(
+    StaticSectionCard(
         title = "About",
         subtitle = "StreamVerse TV v$version",
-        isExpanded = false,
-        onToggle = { },
-        accentColor = IosGray,
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             Text(
@@ -521,15 +558,21 @@ private fun AboutSection(version: String) {
                 style = MaterialTheme.typography.bodySmall,
                 color = IosGray,
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Built by Captain Global Technologies — a software studio specialising in digital television, streaming infrastructure, and open-source media tools.",
+                style = MaterialTheme.typography.bodySmall,
+                color = IosGray,
+            )
             Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = "Version $version · Built by Captain Global Technologies",
+                text = "Version $version",
                 style = MaterialTheme.typography.labelSmall,
                 color = IosGray.copy(alpha = 0.6f),
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "© 2026 Captain Global Technologies",
+                text = "© 2026 Captain Global Technologies. All rights reserved.",
                 style = MaterialTheme.typography.labelSmall,
                 color = IosGray.copy(alpha = 0.6f),
             )

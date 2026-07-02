@@ -42,7 +42,7 @@ class CanonicalEngine(
             val existing = matchExisting(raw, name, hk, byExactName, byHashKey, byTvgId, byRawId, byStreamUrl, byId)
             if (existing != null) {
                 if (name.length > 2 && existing.displayName.length <= 2) {
-                    existing.displayName = name
+                    existing.displayName = if (isChecksumLike(name)) raw.id.take(8).uppercase() else name
                     val norm = name.trim().lowercase()
                     byExactName[norm] = existing.id
                     byHashKey.getOrPut(hk) { mutableSetOf() }.add(existing.id)
@@ -81,6 +81,7 @@ class CanonicalEngine(
                         "${key}${idx}"
                     }
                 } else name
+                val finalName = if (isChecksumLike(displayName)) raw.id.take(8).uppercase() else displayName
                 val info = SourceInfo(
                     type = raw.source,
                     referenceId = raw.id,
@@ -91,7 +92,7 @@ class CanonicalEngine(
                 )
                 val canonical = MutableRawChannel(
                     id = id,
-                    displayName = displayName,
+                    displayName = finalName,
                     logoUrl = raw.logoUrl,
                     quality = qualityFrom(raw.quality),
                     category = normalizeCategory(raw.category),
@@ -107,11 +108,11 @@ class CanonicalEngine(
                 if (name.length > 2) {
                     byHashKey.getOrPut(hk) { mutableSetOf() }.add(id)
                     byExactName[name.lowercase().trim()] = id
-                } else if (displayName != name) {
-                    val renamedHk = NameNormalizer.hashKey(displayName, aliasDict)
+                } else if (finalName != name) {
+                    val renamedHk = NameNormalizer.hashKey(finalName, aliasDict)
                     if (renamedHk.isNotBlank()) {
                         byHashKey.getOrPut(renamedHk) { mutableSetOf() }.add(id)
-                        byExactName[displayName.lowercase().trim()] = id
+                        byExactName[finalName.lowercase().trim()] = id
                     }
                 }
                 if (!raw.tvgId.isNullOrBlank()) byTvgId[raw.tvgId.trim().lowercase()] = id
@@ -181,6 +182,9 @@ class CanonicalEngine(
 
     companion object {
         private val RE_CAMEL_BOUNDARY = Regex("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+        private val RE_CHECKSUM = Regex("^[0-9a-fA-F-]{20,}$")
+
+        fun isChecksumLike(name: String): Boolean = RE_CHECKSUM.matches(name)
 
         fun sentenceCase(input: String): String {
             val parts = input.split(RE_CAMEL_BOUNDARY)
@@ -189,11 +193,12 @@ class CanonicalEngine(
             return parts
         }
 
-        private fun deriveNameFromTvgId(tvgId: String?): String? {
+        fun deriveNameFromTvgId(tvgId: String?): String? {
             if (tvgId.isNullOrBlank()) return null
             val beforeDot = tvgId.trim().split(".").first().trim()
             if (beforeDot.length <= 2) return null
             val named = sentenceCase(beforeDot)
+            if (isChecksumLike(named)) return null
             return named.ifBlank { null }
         }
     }

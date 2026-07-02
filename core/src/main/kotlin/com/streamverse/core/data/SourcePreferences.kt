@@ -40,7 +40,7 @@ enum class SourceProvider(
     // ── Gamma: API Sources (individual API/scrape clients) ────────────────
     FREE_CHANNEL(
         "Free Streaming Services",
-        "Pluto TV, Plex, Roku, Tubi, Xumo & Distro TV direct CDN playlists",
+        "Free ad-supported streaming TV (FAST) channels from leading platforms",
         ProviderGroup.GAMMA,
     ),
     YOUTUBE_TV(

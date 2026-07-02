@@ -102,7 +102,7 @@ class SettingsViewModel @Inject constructor(
                         displayName = provider.displayName,
                         isEnabled = enabled[provider] ?: true,
                         channelCount = channelCount,
-                        isOnline = state?.lifecycle == com.streamverse.core.data.source.LifecycleState.ACTIVE,
+                        isOnline = channelCount > 0 || state?.lifecycle == com.streamverse.core.data.source.LifecycleState.ACTIVE,
                     )
                 }
                 _state.value = _state.value.copy(

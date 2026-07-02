@@ -305,8 +305,8 @@ class TVBrowseFragment : BrowseSupportFragment() {
         // SortMode-specific channel groupings
         val categories: List<Pair<String, List<Channel>>> = when (sortMode) {
             SortMode.CATEGORY -> {
-                val cats = liveChs.mapNotNull { it.category }.distinct()
-                    .filter { it != CategoryNormalizer.C.RADIO }.sorted()
+                val available = liveChs.mapNotNull { it.category }.toSet()
+                val cats = CategoryNormalizer.C.ALL_TV.filter { it in available }
                 cats.mapNotNull { cat ->
                     val chs = programmeRepo.topByCategory(liveChs, cat, limit = 40, ctx).let { liveFirst(it) }
                     if (chs.isNotEmpty()) cat to chs else null

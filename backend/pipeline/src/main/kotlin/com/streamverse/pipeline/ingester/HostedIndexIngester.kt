@@ -67,33 +67,48 @@ class HostedIndexIngester(
 
     override fun ingest(): List<RawChannel> {
         logger.info("HostedIndexIngester", "Fetching hosted index")
-        val body = fetchUrl("merged.json")
-        val merged = gson.fromJson(body, MergedResponse::class.java) ?: return emptyList()
-
-        logger.info("HostedIndexIngester", "Fetched merged catalogue with ${merged.channels?.size ?: 0} channels")
         val channels = mutableListOf<RawChannel>()
 
-        for (ch in merged.channels.orEmpty()) {
-            for ((sourceType, info) in ch.sources.orEmpty()) {
-                channels.add(RawChannel(
-                    id = ch.id,
-                    displayName = ch.displayName,
-                    streamUrl = info.streamUrl ?: continue,
-                    logoUrl = ch.logoUrl,
-                    category = ch.category,
-                    country = ch.country,
-                    language = ch.language,
-                    quality = ch.quality,
-                    tvgId = ch.tvgId,
-                    source = sourceType,
-                    headers = info.headers ?: emptyMap(),
-                    drmKeyId = info.drmKeyId,
-                    drmKey = info.drmKey,
-                ))
+        runCatching {
+            val body = fetchUrl("merged.json")
+            val merged = gson.fromJson(body, MergedResponse::class.java)
+            if (merged != null) {
+                logger.info("HostedIndexIngester", "Fetched merged catalogue with ${merged.channels?.size ?: 0} channels")
+                for (ch in merged.channels.orEmpty()) {
+                    for ((sourceType, info) in ch.sources.orEmpty()) {
+                        channels.add(RawChannel(
+                            id = ch.id,
+                            displayName = ch.displayName,
+                            streamUrl = info.streamUrl ?: continue,
+                            logoUrl = ch.logoUrl,
+                            category = ch.category,
+                            country = ch.country,
+                            language = ch.language,
+                            quality = ch.quality,
+                            tvgId = ch.tvgId,
+                            source = sourceType,
+                            headers = info.headers ?: emptyMap(),
+                            drmKeyId = info.drmKeyId,
+                            drmKey = info.drmKey,
+                        ))
+                    }
+                }
             }
-        }
+        }.onFailure { logger.warn("HostedIndexIngester", "merged.json fetch failed: ${it.message}") }
 
-        logger.info("HostedIndexIngester", "Extracted ${channels.size} raw channel entries from merged.json")
+        runCatching {
+            val hosted = fetchHostedOnly()
+            val before = channels.size
+            val existingIds = channels.map { it.id }.toSet()
+            for (ch in hosted) {
+                if (ch.id !in existingIds) {
+                    channels.add(ch)
+                }
+            }
+            logger.info("HostedIndexIngester", "Added ${channels.size - before} extra channels from channels.json")
+        }.onFailure { logger.warn("HostedIndexIngester", "channels.json fetch failed: ${it.message}") }
+
+        logger.info("HostedIndexIngester", "Total raw channel entries: ${channels.size}")
         return channels
     }
 

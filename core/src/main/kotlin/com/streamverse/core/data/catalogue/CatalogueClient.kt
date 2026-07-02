@@ -30,7 +30,7 @@ class CatalogueClient @Inject constructor(
 ) {
     private val manifestFile = File(context.cacheDir, "catalogue_manifest.json")
     private val tag = "CatalogueClient"
-    private val catalogueUrl = "https://Goddiewayne.github.io/streamverse-data/merged.json"
+    private val catalogueUrl = "https://Goddiewayne.github.io/streamverse-data/channels.json"
 
     data class CatalogueResult(
         val channels: List<Channel>,
@@ -83,20 +83,16 @@ class CatalogueClient @Inject constructor(
             val response = okHttpClient.newCall(request).execute()
             if (!response.isSuccessful) return emptyList()
             val body = response.body?.string() ?: return emptyList()
-            parseMergedJson(body)
+            parseChannelsJson(body)
         } catch (e: Exception) {
             Log.w(tag, "Fetch failed: ${e.message}")
             emptyList()
         }
     }
 
-    private fun parseMergedJson(body: String): List<Channel> {
-        val type = object : TypeToken<Map<String, Any>>() {}.type
-        val raw: Map<String, Any> = gson.fromJson(body, type)
-        val channelsRaw = raw["channels"] ?: return emptyList()
-        val channelsJson = gson.toJson(channelsRaw)
-        val channelType = object : TypeToken<List<Channel>>() {}.type
-        return gson.fromJson(channelsJson, channelType)
+    private fun parseChannelsJson(body: String): List<Channel> {
+        val type = object : TypeToken<List<Channel>>() {}.type
+        return gson.fromJson(body, type) ?: emptyList()
     }
 
     private fun readManifest(): CatalogueManifest? {

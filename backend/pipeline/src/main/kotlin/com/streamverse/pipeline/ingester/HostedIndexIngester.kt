@@ -18,6 +18,7 @@ data class HostedChannel(
     val language: String?,
     val quality: String?,
     val source: String?,
+    val tvgId: String? = null,
     val headers: Map<String, String>?,
     @SerializedName("drm_key_id") val drmKeyId: String?,
     @SerializedName("drm_key") val drmKey: String?,
@@ -25,6 +26,8 @@ data class HostedChannel(
 
 data class IndexResponse(
     val version: Int?,
+    val source: String?,
+    val total: Int?,
     val channels: List<HostedChannel>?,
 )
 
@@ -53,91 +56,60 @@ class HostedIndexIngester(
         "INDEPENDENT" to SourceType.BROADCASTER,
     )
 
-    private val sourcePriorities: Map<SourceType, Int> = mapOf(
-        SourceType.BROADCASTER to 0,
-        SourceType.FREE_CHANNEL to 1,
-        SourceType.YOUTUBE_TV to 2,
-        SourceType.SPORTS_EVENTS to 3,
-        SourceType.WORLD_TV to 4,
-        SourceType.GLOBAL_INDEX to 5,
-        SourceType.RADIO to 6,
+    private val indexFiles: Map<String, String> = mapOf(
+        "iptv_index.json" to "GLOBAL_INDEX",
+        "free_tv_index.json" to "GLOBAL_INDEX",
+        "fast_tv_index.json" to "GLOBAL_INDEX",
+        "premium_index.json" to "GLOBAL_INDEX",
+        "free_live_index.json" to "FREE_CHANNEL",
+        "radio_index.json" to "RADIO",
+        "stmify_index.json" to "WORLD_TV",
+        "dlhd_index.json" to "SPORTS_EVENTS",
+        "youtube_tv_index.json" to "YOUTUBE_TV",
+        "independent_index.json" to "BROADCASTER",
+        "broadcaster_index.json" to "BROADCASTER",
     )
 
     override fun name() = "HostedIndex"
 
     override fun ingest(): List<RawChannel> {
-        logger.info("HostedIndexIngester", "Fetching hosted index")
+        logger.info("HostedIndexIngester", "Fetching hosted index files")
         val channels = mutableListOf<RawChannel>()
 
-        runCatching {
-            val body = fetchUrl("merged.json")
-            val merged = gson.fromJson(body, MergedResponse::class.java)
-            if (merged != null) {
-                logger.info("HostedIndexIngester", "Fetched merged catalogue with ${merged.channels?.size ?: 0} channels")
-                for (ch in merged.channels.orEmpty()) {
-                    for ((sourceType, info) in ch.sources.orEmpty()) {
-                        channels.add(RawChannel(
-                            id = ch.id,
-                            displayName = ch.displayName,
-                            streamUrl = info.streamUrl ?: continue,
-                            logoUrl = ch.logoUrl,
-                            category = ch.category,
-                            country = ch.country,
-                            language = ch.language,
-                            quality = ch.quality,
-                            tvgId = ch.tvgId,
-                            source = sourceType,
-                            headers = info.headers ?: emptyMap(),
-                            drmKeyId = info.drmKeyId,
-                            drmKey = info.drmKey,
-                        ))
-                    }
+        for ((file, defaultSource) in indexFiles) {
+            runCatching {
+                val body = fetchUrl(file)
+                val response = gson.fromJson(body, IndexResponse::class.java)
+                val rawList = response?.channels.orEmpty()
+                if (rawList.isEmpty()) {
+                    logger.warn("HostedIndexIngester", "$file: 0 channels")
+                    return@runCatching
                 }
-            }
-        }.onFailure { logger.warn("HostedIndexIngester", "merged.json fetch failed: ${it.message}") }
-
-        runCatching {
-            val hosted = fetchHostedOnly()
-            val before = channels.size
-            val existingIds = channels.map { it.id }.toSet()
-            for (ch in hosted) {
-                if (ch.id !in existingIds) {
-                    channels.add(ch)
+                for (ch in rawList) {
+                    val st = sourceTypeMap[ch.source ?: defaultSource]
+                    if (st == null) continue
+                    channels.add(RawChannel(
+                        id = ch.id,
+                        displayName = ch.name,
+                        streamUrl = ch.streamUrl ?: continue,
+                        logoUrl = ch.logoUrl,
+                        category = ch.category,
+                        country = ch.country,
+                        language = ch.language,
+                        quality = ch.quality,
+                        tvgId = ch.tvgId,
+                        source = st,
+                        headers = ch.headers ?: emptyMap(),
+                        drmKeyId = ch.drmKeyId,
+                        drmKey = ch.drmKey,
+                    ))
                 }
-            }
-            logger.info("HostedIndexIngester", "Added ${channels.size - before} extra channels from channels.json")
-        }.onFailure { logger.warn("HostedIndexIngester", "channels.json fetch failed: ${it.message}") }
+                logger.info("HostedIndexIngester", "$file: ${rawList.size} channels → ${rawList.size}")
+            }.onFailure { logger.warn("HostedIndexIngester", "$file fetch failed: ${it.message}") }
+        }
 
         logger.info("HostedIndexIngester", "Total raw channel entries: ${channels.size}")
         return channels
-    }
-
-    fun fetchHostedOnly(): List<RawChannel> {
-        val body = fetchUrl("channels.json")
-        val index = gson.fromJson(body, IndexResponse::class.java) ?: return emptyList()
-        val rawList = index.channels.orEmpty()
-        val results = mutableListOf<RawChannel>()
-
-        for (ch in rawList) {
-            val st = sourceTypeMap[ch.source]
-            if (st == null) continue
-            results.add(RawChannel(
-                id = ch.id,
-                displayName = ch.name,
-                streamUrl = ch.streamUrl,
-                logoUrl = ch.logoUrl,
-                category = ch.category,
-                country = ch.country,
-                language = ch.language,
-                quality = ch.quality,
-                tvgId = null,
-                source = st,
-                headers = ch.headers ?: emptyMap(),
-                drmKeyId = ch.drmKeyId,
-                drmKey = ch.drmKey,
-            ))
-        }
-        return results
     }
 
     private fun fetchUrl(path: String): String {
@@ -148,35 +120,4 @@ class HostedIndexIngester(
         if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code} fetching $url")
         return resp.body?.string() ?: throw RuntimeException("Empty response from $url")
     }
-
-    data class MergedResponse(
-        val version: Int?,
-        val generatedAtMs: Long?,
-        val channels: List<MergedChannel>?,
-    )
-
-    data class MergedChannel(
-        val id: String,
-        val logicalId: String?,
-        val displayName: String,
-        val aliases: List<String>?,
-        val logoUrl: String?,
-        val quality: String?,
-        val category: String?,
-        val language: String?,
-        val country: String?,
-        val description: String?,
-        val tvgId: String?,
-        val sources: Map<SourceType, SourceInfoDto>?,
-        val isLive: Boolean?,
-    )
-    data class SourceInfoDto(
-        val type: SourceType?,
-        val referenceId: String?,
-        val streamUrl: String?,
-        val headers: Map<String, String>?,
-        val drmKeyId: String?,
-        val drmKey: String?,
-        val available: Boolean?,
-    )
 }

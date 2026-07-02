@@ -25,6 +25,8 @@ class CanonicalEngine(
         val byHashKey = mutableMapOf<String, MutableSet<String>>()
         val byExactName = mutableMapOf<String, String>()
         val byTvgId = mutableMapOf<String, String>()
+        val byRawId = mutableMapOf<String, String>()
+        val byStreamUrl = mutableMapOf<String, String>()
         val byId = linkedMapOf<String, MutableRawChannel>()
 
         var duplicatesMerged = 0
@@ -36,7 +38,7 @@ class CanonicalEngine(
             val hk = NameNormalizer.hashKey(name, aliasDict)
             if (hk.isBlank()) continue
 
-            val existing = matchExisting(raw, name, hk, byExactName, byHashKey, byTvgId, byId)
+            val existing = matchExisting(raw, name, hk, byExactName, byHashKey, byTvgId, byRawId, byStreamUrl, byId)
             if (existing != null) {
                 val info = SourceInfo(
                     type = raw.source,
@@ -77,9 +79,14 @@ class CanonicalEngine(
                     healthySources = 1,
                 )
                 byId[id] = canonical
-                byHashKey.getOrPut(hk) { mutableSetOf() }.add(id)
-                byExactName[name.lowercase().trim()] = id
+                byRawId[raw.id] = id
+                if (name.length > 2) {
+                    byHashKey.getOrPut(hk) { mutableSetOf() }.add(id)
+                    byExactName[name.lowercase().trim()] = id
+                }
                 if (!raw.tvgId.isNullOrBlank()) byTvgId[raw.tvgId.trim().lowercase()] = id
+                val urlKey = normalizeUrl(raw.streamUrl)
+                if (urlKey != null) byStreamUrl[urlKey] = id
             }
         }
 
@@ -110,15 +117,36 @@ class CanonicalEngine(
         byExactName: Map<String, String>,
         byHashKey: Map<String, Set<String>>,
         byTvgId: Map<String, String>,
+        byRawId: Map<String, String>,
+        byStreamUrl: Map<String, String>,
         byId: Map<String, MutableRawChannel>,
     ): MutableRawChannel? {
-        val norm = name.trim().lowercase()
-        byExactName[norm]?.let { return byId[it] }
-        byHashKey[hk]?.firstOrNull()?.let { return byId[it] }
         if (!raw.tvgId.isNullOrBlank()) {
             byTvgId[raw.tvgId.trim().lowercase()]?.let { return byId[it] }
         }
+        val urlKey = normalizeUrl(raw.streamUrl)
+        if (urlKey != null) {
+            byStreamUrl[urlKey]?.let { return byId[it] }
+        }
+        byRawId[raw.id]?.let { return byId[it] }
+        if (name.length > 2) {
+            val norm = name.trim().lowercase()
+            byExactName[norm]?.let { return byId[it] }
+            byHashKey[hk]?.firstOrNull()?.let { return byId[it] }
+        }
         return null
+    }
+
+    private fun normalizeUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val normalized = url.trim()
+            .lowercase()
+            .replaceFirst("^https?://".toRegex(), "")
+            .trimEnd('/')
+            .removeSuffix(".m3u8")
+            .removeSuffix(".m3u")
+        if (normalized.isBlank()) return null
+        return normalized
     }
 
     private fun generateId(raw: RawChannel): String {

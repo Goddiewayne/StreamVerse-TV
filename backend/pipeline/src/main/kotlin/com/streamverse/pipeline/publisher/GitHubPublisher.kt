@@ -93,10 +93,9 @@ class GitHubPublisher(
                 if (file.isFile) {
                     val dest = File(publishDir, file.name)
                     file.copyTo(dest, overwrite = true)
+                    runGit(publishDir, "add", file.name)
                 }
             }
-
-            runGit(publishDir, "add", "-A", ".")
             val status = runGit(publishDir, "status", "--porcelain")
             val changedCount = status.lines().count { it.isNotBlank() }
 

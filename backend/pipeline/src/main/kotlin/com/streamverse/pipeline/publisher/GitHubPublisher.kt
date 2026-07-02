@@ -115,7 +115,18 @@ class GitHubPublisher(
                 "${versionManifest.channelCount} channels, ${versionManifest.liveChannelCount} live"
             runGit(publishDir, "commit", "-m", message)
 
-            val pushOutput = runGit(publishDir, "push", "origin", branch)
+            var pushOk = false
+            for (attempt in 1..3) {
+                val pushOutput = runGit(publishDir, "push", "origin", branch)
+                if (pushOutput.lines().none { it.contains("error:", true) }) { pushOk = true; break }
+                logger.warn("GitHubPublisher", "Push attempt $attempt/3 failed, retrying with fresh base...")
+                if (attempt < 3) {
+                    runGit(publishDir, "fetch", "origin", branch)
+                    runGit(publishDir, "reset", "--soft", "origin/$branch")
+                    runGit(publishDir, "commit", "-m", message)
+                }
+            }
+            if (!pushOk) throw RuntimeException("git push failed after 3 attempts")
             val commitHash = runGit(publishDir, "rev-parse", "HEAD").trim()
 
             val elapsed = System.currentTimeMillis() - startMs

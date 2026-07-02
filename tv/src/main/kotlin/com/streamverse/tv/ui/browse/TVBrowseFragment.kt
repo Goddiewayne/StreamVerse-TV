@@ -464,7 +464,7 @@ class TVBrowseFragment : BrowseSupportFragment() {
 
     private fun showLoadingPlaceholders() {
         rowsAdapter.clear()
-        val titles = listOf("Featured", "On Now", "All Channels", "Movies")
+        val titles = listOf("Featured", "On Now", "All Channels", "Movies & Series")
         titles.forEachIndexed { rowIndex, title ->
             val adapter = ArrayObjectAdapter(TVPlaceholderPresenter())
             repeat(8) { adapter.add(it) }

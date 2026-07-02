@@ -37,6 +37,9 @@ object ChannelNameFormatter {
     // Quality / resolution suffixes that belong in lower-case inside parens
     private val QUALITY_TOKENS = setOf("1080p", "720p", "480p", "360p", "4k", "hdr", "fhd", "sd")
 
+    // Insert space between letter and digit runs (MBC2 → MBC 2, Italia1 → Italia 1)
+    private val RE_LETTER_DIGIT = Regex("(?<=[A-Za-z])(?=\\d)|(?<=\\d)(?=[A-Za-z])")
+
     // Bracketed resolution / quality tags to strip from channel names, e.g. (360p) (720p)
     // (1080i) (1080p) (2160p) (480i) (HD) (FHD) (UHD) (4K) (SD) (HDR) — any (NNNp|NNNi) plus words.
     private val RES_PAREN = Regex(
@@ -73,7 +76,7 @@ object ChannelNameFormatter {
 
     fun format(raw: String): String {
         if (raw.isBlank()) return raw
-        val name = stripResolution(raw)
+        val name = stripResolution(raw).replace(RE_LETTER_DIGIT, " ")
 
         // Tokenise keeping parentheses as their own "words" so we can detect first-after-paren
         val tokens = tokenize(name)

@@ -13,6 +13,7 @@ object NameNormalizer {
     private val RE_PUNCTUATION = Regex("""[\s\-–—_/&|,.:;!'"()\[\]{}«»„"“”‘’]+""")
     private val RE_MULTI_SPACE = Regex("\\s{2,}")
     private val RE_WHITESPACE = Regex("\\s+")
+    private val RE_LETTER_DIGIT = Regex("(?<=[A-Za-z])(?=\\d)|(?<=\\d)(?=[A-Za-z])")
     private val RE_NON_ALNUM = Regex("[^a-z0-9]")
     private val RE_BRANDING = listOf(
         Regex("""\bhd\b""", RegexOption.IGNORE_CASE),
@@ -114,7 +115,8 @@ object NameNormalizer {
         val trimmed = name.trim()
         if (trimmed.length <= 4) return trimmed.uppercase()
 
-        val tokens = trimmed.split(RE_WHITESPACE)
+        val spaced = trimmed.replace(RE_LETTER_DIGIT, " ")
+        val tokens = spaced.split(RE_WHITESPACE)
         return tokens.mapIndexed { i, token ->
             val lower = token.lowercase()
             val upper = token.uppercase()

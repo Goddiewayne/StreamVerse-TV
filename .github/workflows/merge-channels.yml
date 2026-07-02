@@ -35,4 +35,4 @@ jobs:
         working-directory: backend/pipeline
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-        run: ./gradlew run -q
+        run: chmod +x gradlew && ./gradlew run -q

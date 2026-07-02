@@ -68,6 +68,8 @@ class GitHubPublisher(
 
             if (!File(publishDir, ".git").exists()) {
                 runGit(publishDir, "init")
+                runGit(publishDir, "config", "user.email", "bot@streamverse.tv")
+                runGit(publishDir, "config", "user.name", "StreamVerse Bot")
                 runGit(publishDir, "remote", "add", "origin", remoteUrl)
                 runGit(publishDir, "checkout", "-b", branch)
 

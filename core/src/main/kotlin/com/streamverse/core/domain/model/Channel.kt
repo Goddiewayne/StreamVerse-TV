@@ -13,8 +13,13 @@ data class Channel(
     val description: String?,
     val sources: Map<SourceType, SourceInfo>,
     val isFavorite: Boolean = false,
+    val isVerified: Boolean = false,
     val tvgId: String? = null,
-)
+) {
+    companion object {
+        val VERIFIED_SOURCE_TYPES = SourceType.entries.toSet() - SourceType.GLOBAL_INDEX
+    }
+}
 
 enum class Quality { SD, HD, FHD, _4K }
 

@@ -173,10 +173,19 @@ class HomeViewModel @Inject constructor(
     }
 
     private fun sortChannels(channels: List<ChannelSummary>, mode: SortMode): List<ChannelSummary> = when (mode) {
-        SortMode.CATEGORY -> channels
-        SortMode.ALPHABETICAL -> channels.sortedBy { it.displayName.lowercase() }
+        SortMode.CATEGORY -> channels.sortedWith(
+            compareByDescending<ChannelSummary> { it.isVerified }
+                .thenBy { it.category ?: "" }
+                .thenBy { it.displayName.lowercase() }
+        )
+        SortMode.ALPHABETICAL -> channels.sortedWith(
+            compareByDescending<ChannelSummary> { it.isVerified }
+                .thenBy { it.displayName.lowercase() }
+        )
         SortMode.REGION -> channels.sortedWith(
-            compareBy({ it.country ?: "" }, { it.displayName.lowercase() })
+            compareByDescending<ChannelSummary> { it.isVerified }
+                .thenBy { it.country ?: "" }
+                .thenBy { it.displayName.lowercase() }
         )
     }
 }

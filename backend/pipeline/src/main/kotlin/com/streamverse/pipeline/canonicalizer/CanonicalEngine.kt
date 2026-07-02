@@ -31,6 +31,7 @@ class CanonicalEngine(
 
         var duplicatesMerged = 0
         var multiSourceCount = 0
+        val shortNameCounters = mutableMapOf<String, Int>()
 
         for (raw in channels) {
             val name = NameNormalizer.cleanDisplayName(raw.displayName)
@@ -40,6 +41,12 @@ class CanonicalEngine(
 
             val existing = matchExisting(raw, name, hk, byExactName, byHashKey, byTvgId, byRawId, byStreamUrl, byId)
             if (existing != null) {
+                if (name.length > 2 && existing.displayName.length <= 2) {
+                    existing.displayName = name
+                    val norm = name.trim().lowercase()
+                    byExactName[norm] = existing.id
+                    byHashKey.getOrPut(hk) { mutableSetOf() }.add(existing.id)
+                }
                 val info = SourceInfo(
                     type = raw.source,
                     referenceId = raw.id,
@@ -57,6 +64,23 @@ class CanonicalEngine(
                 duplicatesMerged++
             } else {
                 val id = generateId(raw)
+                val displayName = if (name.length <= 2) {
+                    val fromTvgId = deriveNameFromTvgId(raw.tvgId)
+                    if (fromTvgId != null && fromTvgId.length > 2) {
+                        fromTvgId
+                    } else {
+                        val prefix = if (!raw.country.isNullOrBlank()) {
+                            raw.country.trim().take(2).uppercase()
+                        } else {
+                            raw.source.name.take(2).uppercase()
+                        }
+                        val baseName = name.uppercase().trim()
+                        val key = "$prefix-$baseName"
+                        val idx = shortNameCounters.getOrPut(key) { 0 } + 1
+                        shortNameCounters[key] = idx
+                        "${key}${idx}"
+                    }
+                } else name
                 val info = SourceInfo(
                     type = raw.source,
                     referenceId = raw.id,
@@ -67,7 +91,7 @@ class CanonicalEngine(
                 )
                 val canonical = MutableRawChannel(
                     id = id,
-                    displayName = name,
+                    displayName = displayName,
                     logoUrl = raw.logoUrl,
                     quality = qualityFrom(raw.quality),
                     category = normalizeCategory(raw.category),
@@ -83,6 +107,12 @@ class CanonicalEngine(
                 if (name.length > 2) {
                     byHashKey.getOrPut(hk) { mutableSetOf() }.add(id)
                     byExactName[name.lowercase().trim()] = id
+                } else if (displayName != name) {
+                    val renamedHk = NameNormalizer.hashKey(displayName, aliasDict)
+                    if (renamedHk.isNotBlank()) {
+                        byHashKey.getOrPut(renamedHk) { mutableSetOf() }.add(id)
+                        byExactName[displayName.lowercase().trim()] = id
+                    }
                 }
                 if (!raw.tvgId.isNullOrBlank()) byTvgId[raw.tvgId.trim().lowercase()] = id
                 val urlKey = normalizeUrl(raw.streamUrl)
@@ -147,6 +177,25 @@ class CanonicalEngine(
             .removeSuffix(".m3u")
         if (normalized.isBlank()) return null
         return normalized
+    }
+
+    companion object {
+        private val RE_CAMEL_BOUNDARY = Regex("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+        fun sentenceCase(input: String): String {
+            val parts = input.split(RE_CAMEL_BOUNDARY)
+                .filter { it.isNotBlank() }
+                .joinToString(" ") { it.replaceFirstChar { c -> c.uppercaseChar() } }
+            return parts
+        }
+
+        private fun deriveNameFromTvgId(tvgId: String?): String? {
+            if (tvgId.isNullOrBlank()) return null
+            val beforeDot = tvgId.trim().split(".").first().trim()
+            if (beforeDot.length <= 2) return null
+            val named = sentenceCase(beforeDot)
+            return named.ifBlank { null }
+        }
     }
 
     private fun generateId(raw: RawChannel): String {
@@ -219,6 +268,7 @@ class CanonicalEngine(
                 sources = sources.toMap(),
                 totalSources = sources.size,
                 healthySources = sources.count { it.value.available },
+                isVerified = sources.keys.any { it in CanonicalChannel.VERIFIED_SOURCE_TYPES },
                 checksum = java.security.MessageDigest.getInstance("MD5")
                     .digest(checksumInput.toByteArray()).joinToString("") { "%02x".format(it) },
             )

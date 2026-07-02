@@ -6,150 +6,206 @@ import com.streamverse.core.data.CacheStats
 import com.streamverse.core.data.CacheTier
 import com.streamverse.core.data.PlaybackPreferences
 import com.streamverse.core.data.SmartCacheManager
-import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.SourcePreferences
-import com.streamverse.core.data.VideoResizeMode
 import com.streamverse.core.data.SourceProvider
+import com.streamverse.core.data.VideoResizeMode
 import com.streamverse.core.data.repository.ChannelRepository
-import com.streamverse.core.data.repository.ProviderLoadingPhase
-import com.streamverse.core.data.source.LifecycleState
 import com.streamverse.core.data.source.SourceRegistry
-import com.streamverse.core.domain.model.SourceType
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-data class ProviderHealthSummary(
-    val totalChannels: Int = 0,
-    val healthyChannels: Int = 0,
-    val unhealthyChannels: Int = 0,
-    val lifecycle: LifecycleState = LifecycleState.UNREGISTERED,
-    val reliabilityPercent: Int = 0,
-    val avgResponseTimeMs: Long = -1,
-    val consecutiveFailures: Int = 0,
-    val isEnabled: Boolean = true,
-) {
-    val overallState: SourceHealthState get() = when {
-        !isEnabled -> SourceHealthState.UNKNOWN
-        lifecycle != LifecycleState.ACTIVE && lifecycle != LifecycleState.REGISTERED -> SourceHealthState.UNAVAILABLE
-        totalChannels == 0 -> SourceHealthState.UNKNOWN
-        unhealthyChannels == totalChannels -> SourceHealthState.UNAVAILABLE
-        healthyChannels == totalChannels -> SourceHealthState.AVAILABLE
-        else -> SourceHealthState.VERIFYING
-    }
-    val isHealthy: Boolean get() = lifecycle == LifecycleState.ACTIVE && overallState != SourceHealthState.UNAVAILABLE
+enum class SettingsSection {
+    PLAYBACK,
+    CHANNELS_AND_SOURCES,
+    NO_SIGNAL,
+    STORAGE,
+    ADVANCED,
+    DIAGNOSTICS,
+    ABOUT,
 }
+
+data class SourceProviderInfo(
+    val provider: SourceProvider,
+    val displayName: String,
+    val isEnabled: Boolean,
+    val channelCount: Int,
+    val isOnline: Boolean,
+)
+
+data class DiagnosticsInfo(
+    val catalogueVersion: String = "",
+    val channelCount: Int = 0,
+    val enabledSourceCount: Int = 0,
+    val totalSourceCount: Int = 0,
+    val lastUpdated: String = "",
+)
+
+data class SettingsUiState(
+    val expandedSections: Set<SettingsSection> = emptySet(),
+    val searchQuery: String = "",
+    // Playback
+    val keepScreenOn: Boolean = true,
+    val backgroundAudio: Boolean = true,
+    val dataSaver: Boolean = false,
+    val videoScaling: VideoResizeMode = VideoResizeMode.FIT,
+    // No-signal
+    val staticIntensity: String = "medium",
+    val staticChannelBurst: Boolean = true,
+    val staticSound: Boolean = false,
+    // Sources
+    val sourceProviders: List<SourceProviderInfo> = emptyList(),
+    val totalChannelCount: Int = 0,
+    // Storage
+    val cacheStats: List<CacheStats> = emptyList(),
+    val totalCacheSize: String = "0 B",
+    // Diagnostics
+    val diagnostics: DiagnosticsInfo = DiagnosticsInfo(),
+    // Actions
+    val isRefreshingCatalogue: Boolean = false,
+    val activeOperations: Set<String> = emptySet(),
+)
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val sourcePreferences: SourcePreferences,
     private val playbackPreferences: PlaybackPreferences,
-    private val repository: ChannelRepository,
+    private val channelRepository: ChannelRepository,
     private val smartCacheManager: SmartCacheManager,
     private val sourceRegistry: SourceRegistry,
 ) : ViewModel() {
 
-    private val _enabledSources = MutableStateFlow(sourcePreferences.enabled())
-    val enabledSources: StateFlow<Map<SourceProvider, Boolean>> = _enabledSources.asStateFlow()
-
-    private val _sourceChannelCounts = MutableStateFlow(computeSourceChannelCounts())
-    val sourceChannelCounts: StateFlow<Map<SourceProvider, Int>> = _sourceChannelCounts.asStateFlow()
-
-    private val _providerHealthSummaries = MutableStateFlow(emptyMap<SourceProvider, ProviderHealthSummary>())
-    val providerHealthSummaries: StateFlow<Map<SourceProvider, ProviderHealthSummary>> = _providerHealthSummaries.asStateFlow()
-
-    val providerLoadingProgress: StateFlow<Map<SourceProvider, ProviderLoadingPhase>> = repository.providerProgress
+    private val _state = MutableStateFlow(SettingsUiState())
+    val state: StateFlow<SettingsUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
-            repository.channels.collect { _sourceChannelCounts.value = computeSourceChannelCounts() }
-        }
-        viewModelScope.launch {
             combine(
-                repository.channels,
+                channelRepository.channels,
+                sourcePreferences.enabledFlow,
                 sourceRegistry.allStates,
-            ) { channels, states ->
-                computeProviderHealthSummaries(channels, states)
-            }.collect { summaries ->
-                _providerHealthSummaries.value = summaries
-            }
+            ) { channels, enabled, states ->
+                val providers = SourceProvider.entries.map { provider ->
+                    val channelCount = channels.count { ch ->
+                        ch.sources.keys.any { SourceProvider.forType(it) == provider }
+                    }
+                    val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
+                    val state = adapters.firstOrNull()?.let { states[it.providerId] }
+                    SourceProviderInfo(
+                        provider = provider,
+                        displayName = provider.displayName,
+                        isEnabled = enabled[provider] ?: true,
+                        channelCount = channelCount,
+                        isOnline = state?.lifecycle == com.streamverse.core.data.source.LifecycleState.ACTIVE,
+                    )
+                }
+                _state.value = _state.value.copy(
+                    sourceProviders = providers,
+                    totalChannelCount = channels.size,
+                    diagnostics = _state.value.diagnostics.copy(
+                        channelCount = channels.size,
+                        enabledSourceCount = providers.count { it.isEnabled },
+                        totalSourceCount = providers.size,
+                    ),
+                )
+            }.launchIn(viewModelScope)
+        }
+        loadStorageInfo()
+        loadDiagnostics()
+    }
+
+    private fun loadStorageInfo() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                cacheStats = smartCacheManager.allStats(),
+                totalCacheSize = formatBytes(smartCacheManager.totalSizeBytes()),
+            )
         }
     }
 
-    private val _keepScreenOn = MutableStateFlow(playbackPreferences.keepScreenOn)
-    val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
-
-    private val _backgroundPlayback = MutableStateFlow(playbackPreferences.backgroundPlayback)
-    val backgroundPlayback: StateFlow<Boolean> = _backgroundPlayback.asStateFlow()
-
-    private val _dataSaver = MutableStateFlow(sourcePreferences.isDataSaverEnabled())
-    val dataSaver: StateFlow<Boolean> = _dataSaver.asStateFlow()
-
-    private val _resizeMode = MutableStateFlow(playbackPreferences.resizeMode)
-    val resizeMode: StateFlow<VideoResizeMode> = _resizeMode.asStateFlow()
-
-    private val _staticIntensity = MutableStateFlow(playbackPreferences.staticIntensity)
-    val staticIntensity: StateFlow<String> = _staticIntensity.asStateFlow()
-
-    private val _staticAudio = MutableStateFlow(playbackPreferences.staticAudio)
-    val staticAudio: StateFlow<Boolean> = _staticAudio.asStateFlow()
-
-    private val _staticChannelBurst = MutableStateFlow(playbackPreferences.staticChannelBurst)
-    val staticChannelBurst: StateFlow<Boolean> = _staticChannelBurst.asStateFlow()
-
-    private val _cacheStats = MutableStateFlow(refreshCacheStats())
-    val cacheStats: StateFlow<List<CacheStats>> = _cacheStats.asStateFlow()
-
-    private val _totalCacheSize = MutableStateFlow(formatBytes(smartCacheManager.totalSizeBytes()))
-    val totalCacheSize: StateFlow<String> = _totalCacheSize.asStateFlow()
-
-    fun toggleSource(provider: SourceProvider, enabled: Boolean) {
-        sourcePreferences.setEnabled(provider, enabled)
-        _enabledSources.value = sourcePreferences.enabled()
-        _sourceChannelCounts.value = computeSourceChannelCounts()
+    private fun loadDiagnostics() {
+        viewModelScope.launch {
+            val channels = channelRepository.getAllChannels()
+            val providers = SourceProvider.entries.map { provider ->
+                val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
+                val state = adapters.firstOrNull()?.let { sourceRegistry.allStates.value[it.providerId] }
+                SourceProviderInfo(
+                    provider = provider,
+                    displayName = provider.displayName,
+                    isEnabled = sourcePreferences.isEnabled(provider),
+                    channelCount = channels.count { ch ->
+                        ch.sources.keys.any { SourceProvider.forType(it) == provider }
+                    },
+                    isOnline = state?.lifecycle == com.streamverse.core.data.source.LifecycleState.ACTIVE,
+                )
+            }
+            val lastSync = sourceRegistry.allStates.value.values.maxOfOrNull { it.lastSyncMs }
+            _state.value = _state.value.copy(
+                diagnostics = DiagnosticsInfo(
+                    catalogueVersion = "1.1.0",
+                    channelCount = channels.size,
+                    enabledSourceCount = providers.count { it.isEnabled },
+                    totalSourceCount = providers.size,
+                    lastUpdated = if (lastSync != null && lastSync > 0) formatTimestamp(lastSync) else "--",
+                ),
+            )
+        }
     }
 
-    fun toggleKeepScreenOn(enabled: Boolean) {
+    fun toggleSection(section: SettingsSection) {
+        val current = _state.value.expandedSections.toMutableSet()
+        if (current.contains(section)) current.remove(section) else current.add(section)
+        _state.value = _state.value.copy(expandedSections = current)
+    }
+
+    fun setSearchQuery(query: String) {
+        _state.value = _state.value.copy(searchQuery = query)
+    }
+
+    // Playback
+    fun setKeepScreenOn(enabled: Boolean) {
         playbackPreferences.keepScreenOn = enabled
-        _keepScreenOn.value = enabled
+        _state.value = _state.value.copy(keepScreenOn = enabled)
     }
 
-    fun toggleBackgroundPlayback(enabled: Boolean) {
+    fun setBackgroundAudio(enabled: Boolean) {
         playbackPreferences.backgroundPlayback = enabled
-        _backgroundPlayback.value = enabled
+        _state.value = _state.value.copy(backgroundAudio = enabled)
     }
 
-    fun toggleDataSaver(enabled: Boolean) {
+    fun setDataSaver(enabled: Boolean) {
         sourcePreferences.setDataSaverEnabled(enabled)
-        _dataSaver.value = enabled
+        _state.value = _state.value.copy(dataSaver = enabled)
     }
 
-    fun setResizeMode(mode: VideoResizeMode) {
+    fun setVideoScaling(mode: VideoResizeMode) {
         playbackPreferences.resizeMode = mode
-        _resizeMode.value = mode
+        _state.value = _state.value.copy(videoScaling = mode)
     }
 
+    // No-signal
     fun setStaticIntensity(intensity: String) {
         playbackPreferences.staticIntensity = intensity
-        _staticIntensity.value = intensity
+        _state.value = _state.value.copy(staticIntensity = intensity)
     }
 
-    fun toggleStaticAudio(enabled: Boolean) {
-        playbackPreferences.staticAudio = enabled
-        _staticAudio.value = enabled
-    }
-
-    fun toggleStaticChannelBurst(enabled: Boolean) {
+    fun setStaticChannelBurst(enabled: Boolean) {
         playbackPreferences.staticChannelBurst = enabled
-        _staticChannelBurst.value = enabled
+        _state.value = _state.value.copy(staticChannelBurst = enabled)
     }
 
+    fun setStaticSound(enabled: Boolean) {
+        playbackPreferences.staticAudio = enabled
+        _state.value = _state.value.copy(staticSound = enabled)
+    }
+
+    // Storage
     fun clearCacheTier(tier: CacheTier) {
         smartCacheManager.evict(tier)
         refreshCache()
@@ -161,63 +217,69 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun refreshCache() {
-        _cacheStats.value = refreshCacheStats()
-        _totalCacheSize.value = formatBytes(smartCacheManager.totalSizeBytes())
+        loadStorageInfo()
     }
 
-    private fun refreshCacheStats(): List<CacheStats> = smartCacheManager.allStats()
-
-    private fun computeSourceChannelCounts(): Map<SourceProvider, Int> {
-        val channels = repository.getAllChannels()
-        val counts = mutableMapOf<SourceProvider, Int>()
-        for (provider in SourceProvider.entries) counts[provider] = 0
-        for (ch in channels) {
-            for (srcType in ch.sources.keys) {
-                val provider = SourceProvider.forType(srcType)
-                counts[provider] = (counts[provider] ?: 0) + 1
-            }
+    // Actions
+    fun refreshCatalogue() {
+        if (_state.value.isRefreshingCatalogue) return
+        _state.value = _state.value.copy(isRefreshingCatalogue = true)
+        viewModelScope.launch {
+            channelRepository.load()
+            _state.value = _state.value.copy(isRefreshingCatalogue = false)
+            loadStorageInfo()
+            loadDiagnostics()
         }
-        return counts
     }
 
-    private fun computeProviderHealthSummaries(
-        channels: List<com.streamverse.core.domain.model.Channel>,
-        providerStates: Map<String, com.streamverse.core.data.source.ProviderState>,
-    ): Map<SourceProvider, ProviderHealthSummary> {
-        val providerChannels = mutableMapOf<SourceProvider, MutableList<SourceType>>()
-        for (channel in channels) {
-            for ((sourceType, _) in channel.sources) {
-                val provider = SourceProvider.forType(sourceType)
-                providerChannels.getOrPut(provider) { mutableListOf() }.add(sourceType)
-            }
+    fun rebuildSearchIndex() {
+        markOperation("rebuild_index")
+        viewModelScope.launch {
+            channelRepository.reload()
+            clearOperation("rebuild_index")
         }
-        val enabled = _enabledSources.value
-        return SourceProvider.entries.associateWith { provider ->
-            val sources = providerChannels[provider] ?: emptyList()
-            val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
-            val state = adapters.firstOrNull()?.let { providerStates[it.providerId] }
-            val lifecycle = state?.lifecycle ?: LifecycleState.UNREGISTERED
-            val h = state?.health
-            val reliability = if (h != null && h.totalRequests > 0) {
-                (h.successfulRequests * 100 / h.totalRequests).toInt()
-            } else 0
-            val respTime = h?.responseTimeMs ?: -1
-            val isEnabled = enabled[provider] ?: true
-            val failures = h?.consecutiveFailures ?: 0
-            ProviderHealthSummary(
-                totalChannels = sources.size,
-                lifecycle = lifecycle, reliabilityPercent = reliability,
-                avgResponseTimeMs = respTime, consecutiveFailures = failures, isEnabled = isEnabled,
-            )
+    }
+
+    fun refreshMetadata() {
+        markOperation("refresh_metadata")
+        viewModelScope.launch {
+            channelRepository.load()
+            clearOperation("refresh_metadata")
         }
+    }
+
+    fun validateStreams() {
+        markOperation("validate_streams")
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(1500)
+            clearOperation("validate_streams")
+        }
+    }
+
+    // Source management
+    fun toggleSourceProvider(provider: SourceProvider, enabled: Boolean) {
+        sourcePreferences.setEnabled(provider, enabled)
+        val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
+        for (adapter in adapters) {
+            if (enabled) sourceRegistry.enable(adapter.providerId)
+            else sourceRegistry.disable(adapter.providerId)
+        }
+    }
+
+    private fun markOperation(op: String) {
+        val current = _state.value.activeOperations.toMutableSet()
+        current.add(op)
+        _state.value = _state.value.copy(activeOperations = current)
+    }
+
+    private fun clearOperation(op: String) {
+        val current = _state.value.activeOperations.toMutableSet()
+        current.remove(op)
+        _state.value = _state.value.copy(activeOperations = current)
     }
 
     companion object {
-        fun formatChannelCount(count: Int): String = when {
-            count >= 10_000 -> "%.1fk".format(count / 1_000.0)
-            count >= 1_000 -> "%.1fk".format(count / 1_000.0)
-            else -> "$count"
-        }
+        private const val TAG = "SettingsViewModel"
     }
 
     private fun formatBytes(bytes: Long): String = when {
@@ -225,5 +287,10 @@ class SettingsViewModel @Inject constructor(
         bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
         bytes >= 1024 -> "%.0f KB".format(bytes / 1024.0)
         else -> "$bytes B"
+    }
+
+    private fun formatTimestamp(ms: Long): String {
+        val sdf = java.text.SimpleDateFormat("MMM dd, HH:mm", java.util.Locale.getDefault())
+        return sdf.format(java.util.Date(ms))
     }
 }

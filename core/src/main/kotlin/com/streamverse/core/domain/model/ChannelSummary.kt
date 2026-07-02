@@ -9,6 +9,7 @@ data class ChannelSummary(
     val country: String?,
     val language: String?,
     val sourceCount: Int,
+    val isVerified: Boolean = false,
 )
 
 fun Channel.toSummary() = ChannelSummary(
@@ -20,4 +21,5 @@ fun Channel.toSummary() = ChannelSummary(
     language = language,
     country = country,
     sourceCount = sources.size,
+    isVerified = isVerified,
 )

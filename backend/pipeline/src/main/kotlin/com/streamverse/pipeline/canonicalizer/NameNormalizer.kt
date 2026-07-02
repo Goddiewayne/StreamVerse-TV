@@ -60,13 +60,17 @@ object NameNormalizer {
 
     fun cleanDisplayName(raw: String): String {
         if (raw.isBlank()) return raw
-        return raw
+        var s = raw
             .replace(RE_STATUS_TAG, " ")
             .replace(RE_RES_TAG, " ")
             .replace(RE_BRACKETED, " ")
             .replace(RE_PAREN, " ")
             .replace(RE_DECORATIVE, " ")
-            .replace(RE_MULTI_SPACE, " ")
-            .trim()
+            .replace(RE_PUNCTUATION, " ")
+        for (re in RE_BRANDING) s = re.replace(s, " ")
+        s = s.replace(RE_QUALITY_SUFFIX, "")
+        s = s.replace(RE_RES_PARENS, "")
+        s = s.replace(RE_MULTI_SPACE, " ").trim()
+        return s
     }
 }

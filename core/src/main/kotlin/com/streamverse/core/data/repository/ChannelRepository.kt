@@ -143,16 +143,16 @@ class ChannelRepository @Inject constructor(
                 n == q -> 0
                 n.startsWith(q) -> 1
                 n.split(RE_SEARCH_WORD).any { it.startsWith(q) } -> 2
-                q in (ch.category?.lowercase() ?: "") -> 3
-                q in (ch.language?.lowercase() ?: "") -> 3
-                q in (ch.country?.lowercase() ?: "") -> 3
-                ch.aliases.any { q in it.lowercase() } -> 3
-                q in (ch.description?.lowercase() ?: "") -> 3
-                n.contains(q) -> 4
+                n.contains(q) -> 3
+                q in (ch.category?.lowercase() ?: "") -> 4
+                q in (ch.language?.lowercase() ?: "") -> 5
+                q in (ch.country?.lowercase() ?: "") -> 5
+                ch.aliases.any { q in it.lowercase() } -> 5
+                q in (ch.description?.lowercase() ?: "") -> 5
                 else -> return@mapNotNull null
             }
             Scored(ch, score)
-        }.sortedWith(compareBy<Scored> { it.score }.thenBy { it.channel.displayName.length })
+        }.sortedWith(compareBy<Scored> { it.score }.thenBy { it.channel.displayName.length }.thenByDescending { it.channel.isVerified })
             .map { it.channel }
             .let { results ->
                 val enabled = sourcePreferences.enabled()

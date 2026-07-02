@@ -22,12 +22,7 @@ class HostedIndexClient @Inject constructor(
         .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    data class IndexResponse(
-        val version: Int,
-        val channels: List<HostedChannel>,
-    )
-
-    data class HostedChannel(
+        data class HostedChannel(
         val id: String,
         val name: String,
         val streamUrl: String,
@@ -48,8 +43,8 @@ class HostedIndexClient @Inject constructor(
             val req = Request.Builder().url(url).get().build()
             val resp = client.newCall(req).execute()
             val body = resp.body?.string() ?: return@runCatching emptyList()
-            val parsed = gson.fromJson(body, IndexResponse::class.java)
-            val all = parsed.channels
+            val type = object : com.google.gson.reflect.TypeToken<List<HostedChannel>>() {}.type
+            val all: List<HostedChannel> = gson.fromJson(body, type) ?: return@runCatching emptyList()
             val filtered = ArrayList<HostedChannel>(all.size / 2)
             for (ch in all) {
                 if (ch.source in KNOWN_SOURCES) filtered.add(ch)

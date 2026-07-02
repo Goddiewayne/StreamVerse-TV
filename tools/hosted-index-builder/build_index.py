@@ -1001,18 +1001,7 @@ def write_index(channels: list[dict], name: str, output_dir: str):
              os.path.getsize(path) / 1024)
 
 
-def write_combined(all_channels: list[dict], output_dir: str):
-    """Write the single combined channels.json — replaces all individual fetches."""
-    obj = {
-        "version": VERSION,
-        "total": len(all_channels),
-        "channels": all_channels,
-    }
-    path = os.path.join(output_dir, "channels.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=None, separators=(",", ":"))
-    log.info("Wrote combined %s (%d channels, %.1f KB)", path, len(all_channels),
-             os.path.getsize(path) / 1024)
+
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -1075,9 +1064,7 @@ async def main():
                     seen_ids.add(cid)
                     all_channels.append(ch)
 
-        log.info("Combined total: %d channels (unique by id)", len(all_channels))
-        if all_channels:
-            write_combined(all_channels, output_dir)
+        log.info("Combined total: %d channels (unique by id, skipped — pipeline handles combined channels.json)", len(all_channels))
 
     log.info("Done — output in %s", output_dir)
 

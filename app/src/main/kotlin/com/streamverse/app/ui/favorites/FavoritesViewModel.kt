@@ -43,13 +43,11 @@ class FavoritesViewModel @Inject constructor(
             combine(
                 favoritesRepository.getAllFavorites(),
                 repository.availableChannelIds,
-                healthEngine.liveChannelIds,
-            ) { favorites, availableIds, liveIds ->
+            ) { favorites, availableIds ->
                 val byId = repository.getChannelByIdMap()
-                val resolved = favorites.mapNotNull { fav ->
+                favorites.mapNotNull { fav ->
                     if (fav.channelId in availableIds) byId[fav.channelId] else null
                 }
-                if (liveIds.isNotEmpty()) resolved.filter { it.id in liveIds } else resolved
             }.collect { resolved ->
                 healthEngine.verify(resolved, deep = true)
                 _uiState.value = FavoritesUiState(

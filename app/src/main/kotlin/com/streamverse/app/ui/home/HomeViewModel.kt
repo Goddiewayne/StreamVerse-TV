@@ -71,8 +71,7 @@ class HomeViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             combine(repository.channelSummaries, _sortMode, healthEngine.liveChannelIds, favouriteIds) { channels, mode, liveIds, favIds ->
-                val filtered = if (liveIds.isNotEmpty()) channels.filter { it.id in liveIds } else channels
-                val sorted = sortChannels(filtered, mode)
+                val sorted = sortChannels(channels, mode)
                 val categories = buildSectionHeaders(sorted, mode)
                 val ctx = homeRanking.buildHomeContext()
                 val ctxWithFavs = ctx.copy(

@@ -1319,8 +1319,9 @@ private fun ErrorScreen(message: String, onRetry: () -> Unit) {
 // ── UTILITY FUNCTIONS ─────────────────────────────────────────────────────────
 
 private fun buildLetterRows(channels: List<ChannelSummary>): List<Pair<String, List<ChannelSummary>>> {
-    if (channels.isEmpty()) return emptyList()
-    val grouped = channels.groupBy { it.displayName.first().uppercase() }
+    val valid = channels.filter { it.displayName.isNotBlank() }
+    if (valid.isEmpty()) return emptyList()
+    val grouped = valid.groupBy { it.displayName.first().uppercase() }
     val order = listOf("0-9") + ('A'..'Z').map { it.toString() }
     return order.mapNotNull { letter ->
         val chs = when (letter) {

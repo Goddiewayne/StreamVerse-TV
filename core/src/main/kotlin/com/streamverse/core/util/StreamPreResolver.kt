@@ -114,6 +114,16 @@ class StreamPreResolver @Inject constructor(
     }
 
     /**
+     * Check if a specific source for a channel has a cached stream ready.
+     * Used for instant failover prioritization.
+     */
+    fun hasCached(channelId: String, type: SourceType): Boolean {
+        val key = cacheKey(channelId, type)
+        val entry = cache[key] ?: return false
+        return entry.isFresh()
+    }
+
+    /**
      * Check if a channel has any cached stream ready (any source).
      * Used to quickly determine if instant playback is possible.
      */

@@ -22,6 +22,9 @@ gson = "2.11.0"
 annotation = "1.9.1"
 browser = "1.8.0"
 newpipe = "v0.26.3"
+protobuf = "3.25.3"
+protobufGradle = "0.9.4"
+grpc = "1.62.1"
 
 [libraries]
 # Hilt
@@ -93,6 +96,13 @@ newpipe-extractor = { module = "com.github.teamnewpipe:newpipeextractor", versio
 # Coroutines
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+
+# Protobuf
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf" }
+protobuf-gradle = { module = "com.google.protobuf:protobuf-gradle-plugin", version.ref = "protobufGradle" }
+grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

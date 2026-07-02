@@ -3,7 +3,6 @@ package com.streamverse.app.ui.category
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.data.repository.FavoritesRepository
 import com.streamverse.core.domain.model.ChannelSummary
@@ -12,7 +11,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -23,7 +21,6 @@ class ChannelListViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: ChannelRepository,
     private val favoritesRepository: FavoritesRepository,
-    private val healthEngine: ChannelHealthEngine,
 ) : ViewModel() {
 
     val type: String = checkNotNull(savedStateHandle["type"])
@@ -38,12 +35,7 @@ class ChannelListViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            combine(
-                repository.channelSummaries,
-                healthEngine.liveChannelIds,
-            ) { all, liveIds ->
-                if (liveIds.isNotEmpty()) all.filter { it.id in liveIds } else all
-            }.collect { liveChs ->
+            repository.channelSummaries.collect { liveChs ->
                 _channels.value = when (type) {
                     "category" -> liveChs.filter { it.category == value }
                     "az" -> {

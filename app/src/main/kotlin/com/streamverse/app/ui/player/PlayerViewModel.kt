@@ -422,8 +422,10 @@ class PlayerViewModel @Inject constructor(
             streamPreResolver.preResolve(surfChannels[(idx - d + n) % n])
         }
         // Also pre-resolve all sources for the immediate neighbors for instant failover
-        streamPreResolver.preResolveAll(surfChannels[(idx + 1) % n])
-        streamPreResolver.preResolveAll(surfChannels[(idx - 1 + n) % n])
+        viewModelScope.launch {
+            streamPreResolver.preResolveAll(surfChannels[(idx + 1) % n])
+            streamPreResolver.preResolveAll(surfChannels[(idx - 1 + n) % n])
+        }
     }
 
     /**
@@ -573,7 +575,7 @@ class PlayerViewModel @Inject constructor(
             ch,
             failing ?: SourceType.BROADCASTER,
             triedSources,
-            hasCachedStream = { streamPreResolver.hasAnyCached(ch.id, it) }
+            hasCachedStream = { streamPreResolver.hasCached(ch.id, it) }
         )
         if (failoverSelection == null) return false
         triedSources.add(failoverSelection.type)

@@ -76,6 +76,7 @@ class GitHubPublisher(
                 try {
                     runGit(publishDir, "fetch", "origin", branch, "--depth=1")
                     runGit(publishDir, "reset", "--soft", "origin/$branch")
+                    runGit(publishDir, "read-tree", "origin/$branch")
                 } catch (e: Exception) {
                     logger.info("GitHubPublisher", "Branch $branch does not exist on remote, starting fresh")
                 }
@@ -84,6 +85,7 @@ class GitHubPublisher(
                 try {
                     runGit(publishDir, "fetch", "origin", branch, "--depth=1")
                     runGit(publishDir, "reset", "--soft", "origin/$branch")
+                    runGit(publishDir, "read-tree", "origin/$branch")
                 } catch (e: Exception) {
                     logger.warn("GitHubPublisher", "Could not fetch remote: ${e.message}")
                 }
@@ -122,6 +124,7 @@ class GitHubPublisher(
                 if (attempt < 3) {
                     runGit(publishDir, "fetch", "origin", branch)
                     runGit(publishDir, "reset", "--soft", "origin/$branch")
+                    runGit(publishDir, "read-tree", "origin/$branch")
                     runGit(publishDir, "commit", "-m", message)
                 }
             }

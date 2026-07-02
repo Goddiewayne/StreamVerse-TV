@@ -49,7 +49,6 @@ import com.streamverse.core.data.ChannelNavigationEngine
 import com.streamverse.core.data.PlaybackSessionManager
 import com.streamverse.core.data.PlaybackStateMachine
 import com.streamverse.core.data.SourceHealth
-import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.SourceProvider
 import com.streamverse.core.data.repository.ChannelRepository
 import com.streamverse.core.domain.model.Channel
@@ -984,12 +983,10 @@ class TVPlaybackActivity : ComponentActivity() {
                 isFocusable = false
                 // Health state indicator drawable
                 val health = perSourceHealth[type]
-                val stateDrawable = when (health?.state) {
-                    SourceHealthState.AVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#4CAF50"), density)
-                    SourceHealthState.VERIFYING -> createCircleDrawable(android.graphics.Color.parseColor("#FFA726"), density)
-                    SourceHealthState.UNAVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#EF5350"), density)
-                    else -> null
-                }
+                val stateDrawable = if (health != null) {
+                    val color = if (health.consecutiveFailures >= 3) "#EF5350" else "#4CAF50"
+                    createCircleDrawable(android.graphics.Color.parseColor(color), density)
+                } else null
                 if (stateDrawable != null) {
                     setCompoundDrawablesRelativeWithIntrinsicBounds(stateDrawable, null, null, null)
                     compoundDrawablePadding = (6 * density).toInt()
@@ -1651,14 +1648,9 @@ class TVPlaybackActivity : ComponentActivity() {
 
     private fun observeSourceHealth(channelId: String) {
         healthJob?.cancel()
-        healthJob = lifecycleScope.launch {
-            channelHealthEngine.sourceHealthUpdates.collect { updates ->
-                val currentId = channel?.id ?: return@collect
-                val perSource = updates[currentId]
-                if (perSource != null) {
-                    runOnUiThread { refreshChipHealthIndicators(perSource) }
-                }
-            }
+        val perSource = channelHealthEngine.sourceHealthForChannel(channelId)
+        if (perSource.isNotEmpty()) {
+            runOnUiThread { refreshChipHealthIndicators(perSource) }
         }
     }
 
@@ -1668,12 +1660,10 @@ class TVPlaybackActivity : ComponentActivity() {
             val chip = sourceChips.getChildAt(i) as? Button ?: continue
             val (type, _) = sourceOptions.getOrNull(i) ?: continue
             val sh = health[type]
-            val drawable = when (sh?.state) {
-                SourceHealthState.AVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#4CAF50"), d)
-                SourceHealthState.VERIFYING -> createCircleDrawable(android.graphics.Color.parseColor("#FFA726"), d)
-                SourceHealthState.UNAVAILABLE -> createCircleDrawable(android.graphics.Color.parseColor("#EF5350"), d)
-                else -> null
-            }
+            val drawable = if (sh != null) {
+                val color = if (sh.consecutiveFailures >= 3) "#EF5350" else "#4CAF50"
+                createCircleDrawable(android.graphics.Color.parseColor(color), d)
+            } else null
             chip.setCompoundDrawablesRelativeWithIntrinsicBounds(drawable, null, null, null)
             chip.compoundDrawablePadding = if (drawable != null) (6 * d).toInt() else 0
         }

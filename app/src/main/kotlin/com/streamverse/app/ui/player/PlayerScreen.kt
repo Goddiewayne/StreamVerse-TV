@@ -95,7 +95,6 @@ import com.streamverse.app.ui.components.QualityBadge
 import com.streamverse.app.ui.components.SignalLossOverlay
 
 import com.streamverse.core.data.SourceHealth
-import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.VideoResizeMode
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.Quality
@@ -642,14 +641,15 @@ private fun SourceChip(
     isSelected: Boolean,
     onClick: () -> Unit,
 ) {
+    val isUnhealthy = health?.consecutiveFailures != null && health.consecutiveFailures >= 3
     val chipBackground = when {
         isSelected -> MaterialTheme.colorScheme.primary
-        health?.state == SourceHealthState.UNAVAILABLE -> MaterialTheme.colorScheme.errorContainer
+        isUnhealthy -> MaterialTheme.colorScheme.errorContainer
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
     val chipTextColor = when {
         isSelected -> MaterialTheme.colorScheme.onPrimary
-        health?.state == SourceHealthState.UNAVAILABLE -> MaterialTheme.colorScheme.onErrorContainer
+        isUnhealthy -> MaterialTheme.colorScheme.onErrorContainer
         else -> MaterialTheme.colorScheme.onSurface
     }
 
@@ -662,7 +662,7 @@ private fun SourceChip(
             .semantics {
                 val prefix = when {
                     isSelected -> "Now watching from "
-                    health?.state == SourceHealthState.AVAILABLE -> "Live from "
+                    !isUnhealthy -> "Watch from "
                     else -> "Watch from "
                 }
                 contentDescription = prefix + option.label
@@ -678,22 +678,7 @@ private fun SourceChip(
                     modifier = Modifier.size(16.dp),
                 )
             }
-            health?.state == SourceHealthState.AVAILABLE -> {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF4CAF50)),
-                )
-            }
-            health?.state == SourceHealthState.VERIFYING -> {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 2.dp,
-                    color = Color(0xFFFFA726),
-                )
-            }
-            health?.state == SourceHealthState.UNAVAILABLE -> {
+            isUnhealthy -> {
                 Icon(
                     Icons.Default.Close,
                     contentDescription = null,
@@ -701,8 +686,16 @@ private fun SourceChip(
                     modifier = Modifier.size(14.dp),
                 )
             }
+            else -> {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF4CAF50)),
+                )
+            }
         }
-        if (isSelected || health?.state != null) {
+        if (isSelected || health != null) {
             Spacer(modifier = Modifier.width(4.dp))
         }
         Text(

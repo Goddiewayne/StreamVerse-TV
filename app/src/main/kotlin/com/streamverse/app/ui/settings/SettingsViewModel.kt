@@ -4,10 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamverse.core.data.CacheStats
 import com.streamverse.core.data.CacheTier
-import com.streamverse.core.data.ChannelHealthEngine
 import com.streamverse.core.data.PlaybackPreferences
 import com.streamverse.core.data.SmartCacheManager
-import com.streamverse.core.data.SourceHealth
 import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.SourcePreferences
 import com.streamverse.core.data.VideoResizeMode
@@ -54,7 +52,6 @@ class SettingsViewModel @Inject constructor(
     private val playbackPreferences: PlaybackPreferences,
     private val repository: ChannelRepository,
     private val smartCacheManager: SmartCacheManager,
-    private val healthEngine: ChannelHealthEngine,
     private val sourceRegistry: SourceRegistry,
 ) : ViewModel() {
 
@@ -76,10 +73,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             combine(
                 repository.channels,
-                healthEngine.sourceHealthUpdates,
                 sourceRegistry.allStates,
-            ) { channels, health, states ->
-                computeProviderHealthSummaries(channels, health, states)
+            ) { channels, states ->
+                computeProviderHealthSummaries(channels, states)
             }.collect { summaries ->
                 _providerHealthSummaries.value = summaries
             }
@@ -186,20 +182,18 @@ class SettingsViewModel @Inject constructor(
 
     private fun computeProviderHealthSummaries(
         channels: List<com.streamverse.core.domain.model.Channel>,
-        perChannelHealth: Map<String, Map<SourceType, SourceHealth>>,
         providerStates: Map<String, com.streamverse.core.data.source.ProviderState>,
     ): Map<SourceProvider, ProviderHealthSummary> {
-        val providerChannels = mutableMapOf<SourceProvider, MutableList<SourceHealth?>>()
+        val providerChannels = mutableMapOf<SourceProvider, MutableList<SourceType>>()
         for (channel in channels) {
             for ((sourceType, _) in channel.sources) {
                 val provider = SourceProvider.forType(sourceType)
-                val health = perChannelHealth[channel.id]?.get(sourceType)
-                providerChannels.getOrPut(provider) { mutableListOf() }.add(health)
+                providerChannels.getOrPut(provider) { mutableListOf() }.add(sourceType)
             }
         }
         val enabled = _enabledSources.value
         return SourceProvider.entries.associateWith { provider ->
-            val healths = providerChannels[provider] ?: emptyList()
+            val sources = providerChannels[provider] ?: emptyList()
             val adapters = sourceRegistry.getProvidersForSourceProvider(provider)
             val state = adapters.firstOrNull()?.let { providerStates[it.providerId] }
             val lifecycle = state?.lifecycle ?: LifecycleState.UNREGISTERED
@@ -210,14 +204,8 @@ class SettingsViewModel @Inject constructor(
             val respTime = h?.responseTimeMs ?: -1
             val isEnabled = enabled[provider] ?: true
             val failures = h?.consecutiveFailures ?: 0
-            if (healths.isEmpty()) ProviderHealthSummary(
-                lifecycle = lifecycle, reliabilityPercent = reliability,
-                avgResponseTimeMs = respTime, consecutiveFailures = failures, isEnabled = isEnabled,
-            )
-            else ProviderHealthSummary(
-                totalChannels = healths.size,
-                healthyChannels = healths.count { it?.state == SourceHealthState.AVAILABLE },
-                unhealthyChannels = healths.count { it?.state == SourceHealthState.UNAVAILABLE },
+            ProviderHealthSummary(
+                totalChannels = sources.size,
                 lifecycle = lifecycle, reliabilityPercent = reliability,
                 avgResponseTimeMs = respTime, consecutiveFailures = failures, isEnabled = isEnabled,
             )

@@ -100,8 +100,7 @@ class HomeViewModel @Inject constructor(
                 )
             }.flowOn(Dispatchers.Default).collect { state ->
                 if (state.channels.isNotEmpty()) {
-                    healthEngine.verify(state.featured + state.sections.flatMap { it.channels }.take(50), deep = true)
-                    healthEngine.verify(repository.getCachedChannels().take(500), deep = false)
+                    // verify handled by backend pipeline
                 }
                 _uiState.value = state
             }
@@ -127,7 +126,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             repository.loadingPhase.first { it == LoadingPhase.DONE }
             val allChs = repository.getCachedChannels()
-            if (allChs.isNotEmpty()) healthEngine.verify(allChs.take(2000), deep = false)
+            if (allChs.isNotEmpty()) { /* verify handled by backend pipeline */ }
         }
 
         viewModelScope.launch {

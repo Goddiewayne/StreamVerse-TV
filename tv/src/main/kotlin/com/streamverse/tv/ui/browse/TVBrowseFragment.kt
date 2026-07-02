@@ -186,7 +186,7 @@ class TVBrowseFragment : BrowseSupportFragment() {
         lifecycleScope.launch {
             channelRepository.loadingPhase.first { it == LoadingPhase.DONE }
             val allChs = channelRepository.getCachedChannels()
-            if (allChs.isNotEmpty()) channelHealthEngine.verify(allChs.take(2000), deep = false)
+            if (allChs.isNotEmpty()) { /* verify handled by backend pipeline */ }
         }
     }
 
@@ -212,9 +212,7 @@ class TVBrowseFragment : BrowseSupportFragment() {
         // Schedule health verification
         val recentChs = loadHistory(all)
         val recentIds = recentChs.map { it.id }.toSet()
-        channelHealthEngine.verify(recentChs, deep = true)
-        channelHealthEngine.verify(all.filter { it.id in favoriteIds }, deep = true)
-        channelHealthEngine.verify(all.take(500), deep = false)
+        // verify handled by backend pipeline
 
         val ctx = RankingContext(
             userRegion = RegionProvider.getRegionCode(),
@@ -251,7 +249,7 @@ class TVBrowseFragment : BrowseSupportFragment() {
 
         val onNow = liveFirst(liveChs).sortedByDescending { programmeRepo.rankChannel(it, ctx) }.take(12)
         sections += SectionData(SectionType.HERO_BANNER, "On Now", onNow)
-        channelHealthEngine.verify(featuredChs + onNow, deep = true)
+        // channelHealthEngine.verify(featuredChs + onNow, deep = true)
 
         programmeRepo.updateLiveEvents(liveChs)
         val liveEvents = programmeRepo.liveEvents.value
@@ -461,7 +459,7 @@ class TVBrowseFragment : BrowseSupportFragment() {
 
     /** Schedule health verification for these channels (safe to call from any thread). */
     private fun scheduleVerify(channels: List<Channel>, deep: Boolean) {
-        channelHealthEngine.verify(channels, deep)
+        // verify handled by backend pipeline
     }
 
     private fun showLoadingPlaceholders() {

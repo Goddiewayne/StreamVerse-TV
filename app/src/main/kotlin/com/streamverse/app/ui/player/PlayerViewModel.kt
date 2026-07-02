@@ -135,11 +135,6 @@ class PlayerViewModel @Inject constructor(
     private fun observeSourceHealth(channelId: String) {
         healthJob?.cancel()
         _sourceHealthStates.value = channelHealthEngine.sourceHealthForChannel(channelId)
-        healthJob = viewModelScope.launch {
-            channelHealthEngine.sourceHealthUpdates.collect { updates ->
-                _sourceHealthStates.value = updates[channelId] ?: emptyMap()
-            }
-        }
     }
 
     override fun onCleared() {

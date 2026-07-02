@@ -49,7 +49,7 @@ class FavoritesViewModel @Inject constructor(
                     if (fav.channelId in availableIds) byId[fav.channelId] else null
                 }
             }.collect { resolved ->
-                healthEngine.verify(resolved, deep = true)
+                // verify handled by backend pipeline
                 _uiState.value = FavoritesUiState(
                     channels = resolved.map { it.toSummary() },
                     isLoading = false,

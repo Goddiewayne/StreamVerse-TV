@@ -14,7 +14,6 @@ import com.streamverse.core.data.local.FavoriteDao
 import com.streamverse.core.data.local.StreamVerseDatabase
 import com.streamverse.core.data.remote.dlhd.DlhdClient
 import com.streamverse.core.data.remote.hosted.HostedIndexClient
-import com.streamverse.core.data.remote.MergedIndexClient
 import com.streamverse.core.data.remote.stmify.PrimeVideoClient
 import com.streamverse.core.data.remote.stmify.StmifyClient
 import com.streamverse.core.data.repository.ChannelRankingEngine
@@ -207,14 +206,6 @@ object CoreModule {
 
     @Provides @Singleton
     fun provideYouTubeLiveResolver(): YouTubeLiveResolver = YouTubeLiveResolver()
-
-    // Retained for backward compat — old PlaybackResolver path still references them
-    @Provides @Singleton
-    fun provideMergedIndexClient(
-        gson: Gson,
-        dispatchers: StreamVerseDispatchers,
-        okHttpClient: okhttp3.OkHttpClient,
-    ): MergedIndexClient = MergedIndexClient(gson, dispatchers, okHttpClient)
 
     @Provides @Singleton
     fun provideHostedIndexClient(

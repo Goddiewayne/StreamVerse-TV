@@ -1,9 +1,7 @@
 package com.streamverse.core.util
 
 import com.streamverse.core.data.ChannelHealthEngine
-import com.streamverse.core.data.SourceHealth
 import com.streamverse.core.data.SourceHealthPreferences
-import com.streamverse.core.data.SourceHealthState
 import com.streamverse.core.data.source.provider.ProviderRegistry
 import com.streamverse.core.domain.model.Channel
 import com.streamverse.core.domain.model.SourceType
@@ -40,43 +38,24 @@ class SourceSelector @Inject constructor(
         val sources = channel.sources.keys
             .filter { it !in excludeSources }
 
-        val perSourceHealth = healthEngine.sourceHealthForChannel(channelId)
-
-        // 1. Confirmed playable from health engine (AVAILABLE state)
-        for (type in sources) {
-            val sh = perSourceHealth[type] ?: continue
-            if (sh.state == SourceHealthState.AVAILABLE) {
-                return SourceSelection(type, SourceConfidence.CONFIRMED_PLAYABLE)
-            }
-        }
-
-        // 2. Last good source remembered
+        // 1. Last good source remembered from user playback
         val lastGood = sourceHealth.lastGoodSource(channelId)
         if (lastGood != null && lastGood in sources) {
-            val sh = perSourceHealth[lastGood]
-            if (sh == null || sh.state != SourceHealthState.UNAVAILABLE) {
-                return SourceSelection(lastGood, SourceConfidence.PREVIOUSLY_GOOD)
-            }
+            return SourceSelection(lastGood, SourceConfidence.PREVIOUSLY_GOOD)
         }
 
-        // 3. User preferred source
+        // 2. User preferred source
         if (userPreferredSource != null && userPreferredSource in sources) {
-            val sh = perSourceHealth[userPreferredSource]
-            if (sh == null || sh.state != SourceHealthState.UNAVAILABLE) {
-                return SourceSelection(userPreferredSource, SourceConfidence.USER_PREFERRED)
-            }
+            return SourceSelection(userPreferredSource, SourceConfidence.USER_PREFERRED)
         }
 
-        // 4. Highest ranked healthy source
+        // 3. Highest ranked source from pipeline
         val ranked = sourceResolutionEngine.bestSource(channel)
         if (ranked != null && ranked in sources) {
-            val sh = perSourceHealth[ranked]
-            if (sh == null || sh.state != SourceHealthState.UNAVAILABLE) {
-                return SourceSelection(ranked, SourceConfidence.HIGHEST_RANKED)
-            }
+            return SourceSelection(ranked, SourceConfidence.HIGHEST_RANKED)
         }
 
-        // 5. First available source as fallback
+        // 4. First available source as fallback
         for (type in sources.sortedBy { providerRegistry.priority(it) }) {
             return SourceSelection(type, SourceConfidence.FALLBACK)
         }
@@ -84,27 +63,10 @@ class SourceSelector @Inject constructor(
         return SourceSelection(SourceType.BROADCASTER, SourceConfidence.FALLBACK)
     }
 
-    /**
-     * Select the best verified-playable source for a channel.
-     * Uses [ChannelHealthEngine.bestVerifiedSource] which requires confidence >= 0.5
-     * and not-stale. Falls back to [selectBestSource] ranked ordering if no verified source.
-     */
     fun selectDefaultVerifiedSource(channel: Channel, excludeSources: Set<SourceType> = emptySet()): SourceSelection {
-        val verified = healthEngine.bestVerifiedSource(channel)
-        if (verified != null && verified !in excludeSources) {
-            return SourceSelection(verified, SourceConfidence.CONFIRMED_PLAYABLE)
-        }
         return selectBestSource(channel, excludeSources = excludeSources)
     }
 
-    /**
-     * Select the next best verified-playable source for failover.
-     * ONLY returns sources with isPlaybackVerified() == true — never blind failover.
-     * Returns null if no verified source remains (→ TV static).
-     *
-     * [hasCachedStream] is an optional lambda that returns true if the source has a pre-resolved
-     * stream URL cached, allowing instant failover without network round-trip.
-     */
     fun selectForFailover(
         channel: Channel,
         currentSource: SourceType,
@@ -112,82 +74,20 @@ class SourceSelector @Inject constructor(
         hasCachedStream: (SourceType) -> Boolean = { false },
     ): SourceSelection? {
         val excluded = triedSources + currentSource
-        val perSourceHealth = healthEngine.sourceHealthForChannel(channel.id)
-
-        // First priority: verified sources WITH cached streams (instant failover)
-        val cachedVerifiedCandidates = channel.sources.keys
+        val candidates = channel.sources.keys
             .filter { it !in excluded }
-            .filter { type ->
-                val sh = perSourceHealth[type] ?: return@filter false
-                sh.isPlaybackVerified()
-            }
-            .filter { hasCachedStream(it) }
-            .sortedByDescending { type ->
-                perSourceHealth[type]?.validationConfidence ?: 0f
-            }
+            .sortedBy { providerRegistry.priority(it) }
 
-        for (type in cachedVerifiedCandidates) {
-            return SourceSelection(type, SourceConfidence.CONFIRMED_PLAYABLE)
+        // Cached streams first (instant failover)
+        for (type in candidates) {
+            if (hasCachedStream(type)) {
+                return SourceSelection(type, SourceConfidence.CONFIRMED_PLAYABLE)
+            }
         }
 
-        // Second priority: verified sources without cached streams (need resolution)
-        val verifiedCandidates = channel.sources.keys
-            .filter { it !in excluded }
-            .filter { type ->
-                val sh = perSourceHealth[type] ?: return@filter false
-                sh.isPlaybackVerified()
-            }
-            .sortedByDescending { type ->
-                perSourceHealth[type]?.validationConfidence ?: 0f
-            }
-
-        for (type in verifiedCandidates) {
-            return SourceSelection(type, SourceConfidence.CONFIRMED_PLAYABLE)
-        }
-
-        // Fallback: sources with cached streams first (even if not verified)
-        val cachedFallbackCandidates = channel.sources.keys
-            .filter { it !in excluded }
-            .filter { hasCachedStream(it) }
-            .sortedByDescending { type ->
-                val sh = perSourceHealth[type]
-                when (sh?.state) {
-                    SourceHealthState.AVAILABLE -> 3
-                    null -> 2
-                    SourceHealthState.VERIFYING -> 1
-                    SourceHealthState.UNKNOWN -> 0
-                    SourceHealthState.UNAVAILABLE -> -1
-                }
-            }
-
-        for (type in cachedFallbackCandidates) {
-            val confidence = when {
-                perSourceHealth[type]?.state == SourceHealthState.AVAILABLE -> SourceConfidence.CONFIRMED_PLAYABLE
-                else -> SourceConfidence.FALLBACK
-            }
-            return SourceSelection(type, confidence)
-        }
-
-        // Last resort: any remaining source
-        val fallbackCandidates = channel.sources.keys
-            .filter { it !in excluded }
-            .sortedByDescending { type ->
-                val sh = perSourceHealth[type]
-                when (sh?.state) {
-                    SourceHealthState.AVAILABLE -> 3
-                    null -> 2
-                    SourceHealthState.VERIFYING -> 1
-                    SourceHealthState.UNKNOWN -> 0
-                    SourceHealthState.UNAVAILABLE -> -1
-                }
-            }
-
-        for (type in fallbackCandidates) {
-            val confidence = when {
-                perSourceHealth[type]?.state == SourceHealthState.AVAILABLE -> SourceConfidence.CONFIRMED_PLAYABLE
-                else -> SourceConfidence.FALLBACK
-            }
-            return SourceSelection(type, confidence)
+        // Any remaining source
+        for (type in candidates) {
+            return SourceSelection(type, SourceConfidence.FALLBACK)
         }
         return null
     }
@@ -198,36 +98,16 @@ class SourceSelector @Inject constructor(
         excludeSources: Set<SourceType> = emptySet(),
     ): SourceSelection? {
         val failed = excludeSources + currentSource
-        val perSourceHealth = healthEngine.sourceHealthForChannel(channel.id)
-
         val ordered = channel.sources.keys
             .filter { it !in failed }
-            .sortedByDescending { type ->
-                val sh = perSourceHealth[type]
-                when (sh?.state) {
-                    SourceHealthState.AVAILABLE -> 3
-                    null -> 2
-                    SourceHealthState.VERIFYING -> 1
-                    SourceHealthState.UNKNOWN -> 0
-                    SourceHealthState.UNAVAILABLE -> -1
-                }
-            }
+            .sortedBy { providerRegistry.priority(it) }
 
         for (type in ordered) {
-            val confidence = when {
-                perSourceHealth[type]?.state == SourceHealthState.AVAILABLE -> SourceConfidence.CONFIRMED_PLAYABLE
-                else -> SourceConfidence.FALLBACK
-            }
-            return SourceSelection(type, confidence)
+            return SourceSelection(type, SourceConfidence.FALLBACK)
         }
         return null
     }
 
-    /**
-     * Recalculate the default active source based on current health data.
-     * Does NOT override a working manual selection — returns null if the user is
-     * watching a manually selected source that is currently playing.
-     */
     fun recalculateDefault(
         channel: Channel,
         currentPlaybackSource: SourceType?,
@@ -241,9 +121,7 @@ class SourceSelector @Inject constructor(
         return selectDefaultVerifiedSource(channel, excludeSources)
     }
 
-    /** Check whether a source is verified-playable for the given channel. */
     fun isVerifiedPlayable(channel: Channel, sourceType: SourceType): Boolean {
-        val sh = healthEngine.sourceHealthForChannel(channel.id)[sourceType] ?: return false
-        return sh.isPlaybackVerified()
+        return sourceType in channel.sources
     }
 }

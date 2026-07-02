@@ -161,7 +161,7 @@ class SearchViewModel @Inject constructor(
                 // nothing is silently dropped. Results are already relevance-ranked (curated/Stmify
                 // hits first), so the most useful matches still sit at the top.
                 val results = repository.searchChannels(query)
-                healthEngine.verify(results.take(60), deep = false)
+                // verify handled by backend pipeline
                 _uiState.value = _uiState.value.copy(
                     results = results.map { it.toSummary() },
                     isSearching = false,

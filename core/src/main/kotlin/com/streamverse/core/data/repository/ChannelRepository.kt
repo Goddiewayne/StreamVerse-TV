@@ -48,18 +48,6 @@ class ChannelRepository @Inject constructor(
 
     companion object {
         private val RE_SEARCH_WORD = Regex("""[\s\-/\.&']+""")
-        private val ADULT_NAME_PATTERNS = listOf(
-            Regex("""\b18\+\s*\(""", RegexOption.IGNORE_CASE),
-            Regex("""\b18\+\s*(?:onlyfans|porn|sex|adult|erotic|nude)""", RegexOption.IGNORE_CASE),
-            Regex("""\bxxx\b""", RegexOption.IGNORE_CASE),
-            Regex("""\b(?:porn|porno|pornhub|xnxx|xvideos)\b""", RegexOption.IGNORE_CASE),
-            Regex("""\b(?:onlyfans|playboy)\b""", RegexOption.IGNORE_CASE),
-        )
-    }
-
-    private fun isAdultChannel(ch: Channel): Boolean {
-        val name = ch.displayName.lowercase().trim()
-        return ADULT_NAME_PATTERNS.any { it.containsMatchIn(name) }
     }
 
     private val _channels = MutableStateFlow<List<Channel>>(emptyList())
@@ -77,17 +65,7 @@ class ChannelRepository @Inject constructor(
     val channels: Flow<List<Channel>> =
         combine(_channels, sourcePreferences.enabledFlow) { chs, enabled ->
             if (chs.isEmpty()) return@combine emptyList()
-            val placeholders = placeholderLogos(chs)
-            val filtered = ArrayList<Channel>(chs.size)
-            for (i in chs.indices) {
-                val ch = chs[i]
-                if (isAdultChannel(ch)) continue
-                if (!hasEnabledSource(ch, enabled)) continue
-                val finalCh = if (ch.logoUrl != null && ch.logoUrl in placeholders) ch.copy(logoUrl = null) else ch
-                filtered.add(finalCh)
-            }
-            filtered.trimToSize()
-            filtered
+            chs.filter { hasEnabledSource(it, enabled) }
         }.flowOn(dispatchers.default)
 
     val channelSummaries: Flow<List<ChannelSummary>> =
@@ -103,49 +81,11 @@ class ChannelRepository @Inject constructor(
             else all.asSequence().filter { it.sources.containsKey(SourceType.RADIO) }.take(80).toList()
         }.flowOn(dispatchers.default)
 
-    private val sourceOrder = listOf(
-        SourceType.BROADCASTER, SourceType.GLOBAL_INDEX, SourceType.FREE_CHANNEL,
-        SourceType.SPORTS_EVENTS, SourceType.WORLD_TV, SourceType.YOUTUBE_TV, SourceType.RADIO,
-    )
-
-    private fun sourceRank(ch: Channel): Int {
-        var best = Int.MAX_VALUE
-        for (st in ch.sources.keys) {
-            val idx = sourceOrder.indexOf(st)
-            if (idx >= 0 && idx < best) best = idx
-        }
-        return best
-    }
-
-    @Volatile private var placeholderCacheFor: List<Channel>? = null
-    @Volatile private var placeholderCache: Set<String> = emptySet()
-
-    private fun placeholderLogos(chs: List<Channel>): Set<String> {
-        if (chs === placeholderCacheFor) return placeholderCache
-        val counts = HashMap<String, Int>(chs.size / 5 + 1)
-        val placeholders = HashSet<String>()
-        for (ch in chs) {
-            val url = ch.logoUrl ?: continue
-            if (url.isBlank() || url in placeholders) continue
-            val newCount = (counts[url] ?: 0) + 1
-            if (newCount >= 5) { counts.remove(url); placeholders.add(url) }
-            else counts[url] = newCount
-        }
-        placeholderCacheFor = chs
-        placeholderCache = placeholders
-        return placeholders
-    }
-
     private fun hasEnabledSource(channel: Channel, enabled: Map<SourceProvider, Boolean>): Boolean {
-        var hasEnabledSpecific = false
-        var hasNonBroadcaster = false
-        for (type in channel.sources.keys) {
+        return channel.sources.keys.any { type ->
             val provider = SourceProvider.forType(type)
-            if (enabled[provider] != false) hasEnabledSpecific = true
-            if (provider != SourceProvider.BROADCASTER) hasNonBroadcaster = true
+            enabled[provider] != false
         }
-        if (!hasEnabledSpecific) return false
-        return !hasNonBroadcaster || enabled[SourceProvider.GLOBAL_INDEX] != false
     }
 
     @Volatile private var _idIndex: Map<String, Channel> = emptyMap()
@@ -166,13 +106,12 @@ class ChannelRepository @Inject constructor(
 
             val result = catalogueClient.load()
             if (result.channels.isNotEmpty()) {
-                val sorted = result.channels.sortedBy { sourceRank(it) }
-                _channels.value = sorted
-                _idIndex = sorted.associateBy { it.id }
+                _channels.value = result.channels
+                _idIndex = result.channels.associateBy { it.id }
                 _loadingPhase.value = LoadingPhase.DONE
                 _isLoading.value = false
                 _channelRefreshTrigger.value++
-                Log.d(tag, "Loaded ${sorted.size} channels (v${result.manifest.version}, cache=${result.fromCache})")
+                Log.d(tag, "Loaded ${result.channels.size} channels (v${result.manifest.version}, cache=${result.fromCache})")
             } else {
                 _loadingPhase.value = LoadingPhase.DONE
                 _isLoading.value = false

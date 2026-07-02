@@ -123,7 +123,7 @@ class TVSearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchRe
             val results = channelRepository.searchChannels(query)
             rowsAdapter.clear()
             if (results.isEmpty()) return@launch
-            channelHealthEngine.verify(results.take(60), deep = false)
+            // verify handled by backend pipeline
             // Lay results out as a grid: chunk into rows of `cols` so the list grows vertically
             // instead of one infinitely-wide row.
             val cols = gridColumns()
